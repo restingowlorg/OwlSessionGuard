@@ -1,46 +1,59 @@
 
 ---
 
-# 🛡️ MVP Auth
+# 🛡️ MVP Session
 
-**MVP Auth** is a **framework-agnostic** and **database-agnostic** Node.js authentication library providing:
+**MVP Session** is a **framework-agnostic**, **database-agnostic** Node.js **session management library**, designed to comply with **OWASP ASVS v7 Session Management** requirements.
 
-* Credentials authentication (`email + username + password`)
-* Magic link (passwordless) authentication
-* Session-based authentication (**token-based sessions with rotation**)
-
-It exposes **business-level services** (`AuthManager`) and returns **structured results** (`AuthResult`) without leaking sensitive information.
+It **does not perform authentication**.
+It **only manages sessions** after a user has been authenticated.
 
 ---
 
-## Features
+## What This Library Does
 
-* ✅ Credentials authentication (email + username + password)
-* 🔗 Magic Link (passwordless) authentication
-* 🍪 Session-based authentication with **secure token sessions**
-* 🔄 **Token rotation on every session validation**
-* 💤 **Idle session expiration** (configurable)
-* 🧱 Max concurrent sessions per user with automatic revocation
-* 🧩 Framework agnostic (Express, NestJS, Fastify, custom)
-* 🗄️ Database agnostic (PostgreSQL, MongoDB)
-* 🧪 Strong typing with unified `AuthResult` and `IAuthManager`
-* 🧱 Clean architecture: `AuthManager → Services → Repositories → Infra`
-* 🔒 Secure password hashing & token handling
-* 🔄 PostgreSQL schema auto-validation and migration
-* 🛡️ OWASP-aligned password strength and session handling
+✅ Secure session creation
+✅ Token validation with idle expiration
+✅ Optional token rotation (consumer-controlled)
+✅ Session revocation (logout / security events)
+✅ Max concurrent sessions per user
+✅ Database-backed, revocable sessions
+✅ Strong typing with structured results
+✅ Framework-agnostic (Express, NestJS, Fastify, etc.)
+
+---
+
+## ❌ What This Library Does NOT Do
+
+🚫 No login / signup
+🚫 No password handling
+🚫 No cookies automatically set
+🚫 No forced token rotation
+🚫 No HTTP framework assumptions
+
+> **Authentication and sessions are intentionally decoupled.**
 
 ---
 
 ## Installation
 
 ```bash
-npm install @restingowlorg/mvp-auth
+npm install @restingowlorg/mvp-session
 ```
 
-**Environment Variables:**
+---
 
-* PostgreSQL: `POSTGRES_URL`
-* MongoDB: `MONGO_URI`
+## Database Support
+
+* PostgreSQL
+* MongoDB
+
+### Environment Variables
+
+```env
+POSTGRES_URI=postgres://user:pass@localhost:5432/app
+MONGO_URI=mongodb://localhost:27017/app
+```
 
 ---
 
@@ -49,54 +62,177 @@ npm install @restingowlorg/mvp-auth
 ### PostgreSQL
 
 ```ts
-import { AuthManager } from "@restingowlorg/mvp-auth";
+import { SessionManager } from "@restingowlorg/mvp-session";
 
-const auth = await AuthManager.init({
+const sessionManager = await SessionManager.init({
   dbType: "postgres",
-  postgresUrl: process.env.POSTGRES_URL!,
-  authTypes: ["credentials", "magic-link"],
+  postgresUrl: process.env.POSTGRES_URI!,
   sessionTtlSeconds: 60 * 60 * 24 * 7, // 7 days
-  idleTtlSeconds: 60, // 1 min idle expiration
-  maxSessionsPerUser: 3, // Limit concurrent sessions
+  idleTtlSeconds: 60 * 15,             // 15 minutes
+  maxSessionsPerUser: 3,
 });
 ```
 
 ### MongoDB
 
 ```ts
-const auth = await AuthManager.init({
+const sessionManager = await SessionManager.init({
   dbType: "mongo",
   mongoUri: process.env.MONGO_URI!,
-  authTypes: ["credentials"],
   sessionTtlSeconds: 60 * 60 * 24 * 7,
-  idleTtlSeconds: 60,
+  idleTtlSeconds: 60 * 15,
   maxSessionsPerUser: 3,
 });
 ```
 
-> PostgreSQL schemas are auto-validated/created if missing. Custom table names supported via `userTableName`.
-
 ---
 
-## Core Types
+## Core API
 
-### `IAuthManager`
+### `create(userId)`
+
+Creates a new session for an already-authenticated user.
 
 ```ts
-export interface IAuthManager {
-  signup(email: string, username: string, password: string): Promise<AuthResult>;
-  login(email: string, password: string): Promise<AuthResult>;
-  logout(sessionToken: string): Promise<AuthResult>;
-  me(sessionToken: string): Promise<AuthResult>;
-  requestMagicLink?(email: string): Promise<AuthResult>;
-  consumeMagicLink?(token: string): Promise<AuthResult>;
+const result = await sessionManager.create(userId);
+
+if (result.success) {
+  console.log(result.data.sessionToken);
 }
 ```
 
-### `AuthResult`
+✔ Enforces max concurrent sessions
+✔ Returns a **raw session token** (store securely)
+
+---
+
+### `validate(token)`
+
+Validates a session token and updates `lastUsedAt`.
 
 ```ts
-export interface AuthResult<T = any> {
+const result = await sessionManager.validate(token);
+
+if (!result.success) {
+  // session expired / revoked / invalid
+}
+```
+
+✔ Enforces idle expiration
+✔ Does NOT rotate token automatically
+
+---
+
+### `rotate(token)`
+
+Explicitly rotate a session token.
+
+```ts
+const rotated = await sessionManager.rotate(token);
+
+res.cookie("SESSION", rotated.data.sessionToken, {
+  httpOnly: true,
+  secure: true,
+});
+```
+
+✔ Old token is revoked
+✔ New token returned
+✔ Consumer controls **when** rotation happens
+
+---
+
+### `revoke(token)`
+
+Explicitly revoke a session (logout, password change, security event).
+
+```ts
+await sessionManager.revoke(token);
+```
+
+✔ Immediate invalidation
+✔ Required for logout flows
+
+---
+
+## Express Example
+
+```ts
+app.post("/login", async (req, res) => {
+  const session = await sessionManager.create(user.id);
+
+  res.cookie("SESSION", session.data.sessionToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+  });
+
+  res.json({ success: true });
+});
+```
+
+---
+
+## Session Validation Middleware (Express)
+
+```ts
+async function requireSession(req, res, next) {
+  const token = req.cookies?.SESSION;
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  const result = await sessionManager.validate(token);
+  if (!result.success) return res.status(401).json(result);
+
+  req.session = result.data;
+  next();
+}
+```
+
+---
+
+## OWASP ASVS v7 Compliance
+
+✔ Unique session identifiers
+✔ Server-side session state
+✔ Idle timeout enforcement
+✔ Absolute expiration support
+✔ Explicit logout invalidation
+✔ Session revocation on reuse
+✔ Concurrent session limits
+✔ Token rotation supported (not forced)
+
+> Token rotation is **consumer-controlled** to avoid unnecessary DB writes.
+
+---
+
+## Recommended Rotation Strategy
+
+| Event                | Rotate?         |
+| -------------------- | --------------- |
+| Login                | ❌ (new session) |
+| Every request        | ❌               |
+| Privilege escalation | ✅               |
+| Password change      | ✅               |
+| Sensitive action     | ✅               |
+| Suspected compromise | ✅               |
+
+---
+
+## Security Best Practices
+
+* Always use **HTTPS**
+* Store tokens in **HTTP-only cookies**
+* Rotate tokens on **high-risk actions**
+* Revoke all sessions on password reset
+* Keep idle TTL short (10–30 mins)
+* Limit concurrent sessions
+
+---
+
+## Session Result Type
+
+```ts
+export interface SessionResult<T = any> {
   success: boolean;
   data: T | null;
   httpCode: number;
@@ -104,138 +240,6 @@ export interface AuthResult<T = any> {
 }
 ```
 
-> All APIs return `AuthResult` — sensitive information (passwords, token hashes) is never exposed.
+> Tokens and identifiers are never logged or leaked.
 
 ---
-
-## Usage Examples
-
-### Credentials Signup & Login
-
-```ts
-// Signup
-const signupResult = await auth.signup("user@test.com", "username", "StrongPassword123!");
-res.status(signupResult.httpCode).json(signupResult);
-
-// Login
-const loginResult = await auth.login("user@test.com", "StrongPassword123!");
-if (loginResult.success) {
-  res.cookie("AUTH_SESSION", loginResult.data.sessionToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: loginResult.data.session.expiresAt.getTime() - Date.now(),
-  });
-}
-res.status(loginResult.httpCode).json(loginResult);
-
-// Validate / Rotate session
-const meResult = await auth.me(loginResult.data.sessionToken);
-console.log(meResult.data.sessionToken); // ⚡ New rotated token
-```
-
-### Magic Link Flow
-
-```ts
-// Request Magic Link
-const magicResult = await auth.requestMagicLink!("user@test.com");
-res.status(magicResult.httpCode).json(magicResult);
-
-// Consume Magic Link
-const consumeResult = await auth.consumeMagicLink!(token);
-if (consumeResult.success) {
-  res.cookie("AUTH_SESSION", consumeResult.data.sessionToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-  });
-}
-res.json(consumeResult);
-```
-
-> ⚠️ Tokens (`sessionToken`) are safe for API clients; passwords and token hashes are never returned.
-
----
-
-## NestJS Integration – Protected Routes
-
-You can now protect your NestJS endpoints using the built-in `MvpAuthGuard`:
-
-```ts
-import { Controller, Get, UseGuards, Req, Res } from '@nestjs/common';
-import { MvpAuthGuard } from '@restingowlorg/mvp-auth';
-
-@Controller('auth')
-export class AuthController {
-  @UseGuards(MvpAuthGuard)
-  @Get('protected')
-  async protectedResource(@Req() req, @Res() res) {
-    return res.status(200).json({
-      success: true,
-      message: 'You have accessed a protected resource',
-      userId: req.user.id,
-    });
-  }
-}
-```
-
-**Behavior:**
-
-* If the session is invalid, expired, or missing, the guard returns a structured JSON response:
-
-```json
-{
-  "statusCode": 401,
-  "message": "Session expired due to inactivity",
-  "error": "Unauthorized"
-}
-```
-
-* Token rotation happens automatically on every valid request.
-* The latest `sessionToken` is sent via HTTP-only cookie for the client to continue using.
-
----
-
-## Framework-specific Utilities
-
-* `MvpAuthGuard` for NestJS (protect endpoints)
-* For Express/Fastify, create a middleware using `session.validate(token)`
-* Transparent session rotation and idle timeout handling works across all integrations
-
----
-
-## Security Notes
-
-* Passwords hashed with `bcrypt`
-* Sessions use **secure, revocable token-based approach**
-* **Token rotation** on every validation prevents token reuse
-* HTTP-only cookies recommended
-* **Idle timeout** revokes inactive sessions
-* **Max concurrent sessions** prevents account abuse
-* Password checks follow OWASP guidelines
-
----
-
-## Database Schema Reference (PostgreSQL)
-
-| Table         | Columns                                                       |
-| ------------- | ------------------------------------------------------------- |
-| `users`       | id, email, username, password                                 |
-| `sessions`    | id, user_id, token_hash, expires_at, last_used_at, revoked_at |
-| `magic_links` | id, user_id, token, created_at, used_at                       |
-
-> Library auto-creates or migrates schemas as needed.
-
----
-
-## Best Practices
-
-* Always use **HTTPS + Secure cookies**
-* Keep **sessions short-lived**
-* Validate external user tables before use
-* Use **strong passwords** with optional breach checks
-* Revoke tokens on logout, inactivity, or suspicious activity
-* Monitor logs for **session rotations** 🔄 and revocations 🗑️
-
----
-

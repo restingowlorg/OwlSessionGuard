@@ -1,8 +1,8 @@
 import { SessionResult } from "./types";
 
 export interface ISessionManager {
-  create(subjectId: string, ttlSeconds: number): Promise<SessionResult>;
+  create(subjectId: string): Promise<SessionResult>;
   validate(token: string, idleTtlSeconds?: number): Promise<SessionResult>;
   rotate(token: string): Promise<SessionResult>;
-  revoke(token: string): Promise<void>;
+  revoke(token: string): Promise<SessionResult>;
 }

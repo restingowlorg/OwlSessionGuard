@@ -2,14 +2,14 @@
 import { connectMongo } from "../infra/mongo/db";
 import { initPostgres } from "../infra/postgresql/db";
 import { SessionOptions } from "../types";
-import { authLog } from "../utils/logger";
+import { sessionLog } from "../utils/logger";
 
 export async function initDatabase(options: SessionOptions) {
   switch (options.dbType) {
     case "mongo":
       if (!options.mongoUri) throw new Error("mongoUri is required");
       const mongoDb = await connectMongo(options.mongoUri);
-      authLog("info", "Successfully connected to MongoDB");
+      sessionLog("info", "Successfully connected to MongoDB");
       return mongoDb;
 
     case "postgres":
@@ -18,7 +18,7 @@ export async function initDatabase(options: SessionOptions) {
         options.postgresUrl,
         options.postgresSessionTable
       );
-      authLog("info", "Successfully connected to PostgreSQL");
+      sessionLog("info", "Successfully connected to PostgreSQL");
       return pgDb;
 
     default:

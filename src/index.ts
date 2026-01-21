@@ -1,2 +1,2 @@
-export { SessionManager} from "./auth.manager";
-export const AUTH_MANAGER_TOKEN = 'AUTH_MANAGER';
+export { SessionManager} from "./session.manager";
+export const SESSION_MANAGER = 'SESSION_MANAGER';

@@ -1,7 +1,7 @@
 import { AuthLogLevel } from "../types";
 
-export function authLog(level: AuthLogLevel, message: string) {
-  const prefix = "MVP-AUTH";
+export function sessionLog(level: AuthLogLevel, message: string) {
+  const prefix = "SESSION-LIB";
 
   switch (level) {
     case "info":

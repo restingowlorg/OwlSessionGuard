@@ -1,7 +1,7 @@
 {
-  "name": "@restingowlorg/mvp-auth",
-  "version": "1.0.1",
-  "description": "A framework-agnostic, database-agnostic authentication library for Node.js",
+  "name": "@restingowlorg/mvp-session",
+  "version": "1.0.0",
+  "description": "A framework-agnostic, database-agnostic session management library for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist"],
