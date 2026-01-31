@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { SessionDB } from "../../types";
-import { ensureSessionTable } from "./helpers";
+import { ensureSessionTable, getUserPrimaryKey } from "./helpers";
 import { PostgresSessionRepository } from "../../repositories/postgresql/sessions.repo";
 
 let pool: Pool | null = null;
@@ -21,6 +21,7 @@ export function getPostgresPool(): Pool {
 export async function initPostgres(
   connectionString: string,
   sessionTableName = "sessions",
+  userTable?: string,
 ): Promise<SessionDB> {
   if (pool) {
     throw new Error("PostgreSQL already initialized");
@@ -29,9 +30,9 @@ export async function initPostgres(
   pool = new Pool({ connectionString });
 
   // Ensure the sessions table exists
-  await ensureSessionTable(pool, sessionTableName);
+  await ensureSessionTable(pool, sessionTableName, userTable);
 
   return {
-    sessionRepo: new PostgresSessionRepository(sessionTableName),
+    sessionRepo: new PostgresSessionRepository(sessionTableName, userTable),
   };
 }

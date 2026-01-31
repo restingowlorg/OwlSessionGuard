@@ -1,5 +1,6 @@
 // src/infra/postgres/helpers.ts
 import { Pool } from "pg";
+import { sessionLog } from "../../utils/logger";
 
 // Quote identifier
 export function q(identifier: string) {
@@ -23,7 +24,7 @@ export async function getUserPrimaryKey(pool: Pool, table: string) {
       AND tc.table_schema = 'public'
       AND tc.table_name = $1
     `,
-    [table]
+    [table],
   );
 
   if (!rows.length) {
@@ -37,7 +38,17 @@ export async function getUserPrimaryKey(pool: Pool, table: string) {
 }
 
 // Ensure session table exists
-export async function ensureSessionTable(pool: Pool, table: string) {
+export async function ensureSessionTable(
+  pool: Pool,
+  table: string,
+  userTable?: string,
+) {
+  let userIdType = "UUID"; // default type
+  if (userTable) {
+    const pk = await getUserPrimaryKey(pool, userTable);
+    userIdType = pk.type.toUpperCase(); // e.g., 'UUID', 'BIGINT', 'INTEGER'
+  }
+
   // Check if table exists
   const { rows } = await pool.query(
     `
@@ -47,7 +58,7 @@ export async function ensureSessionTable(pool: Pool, table: string) {
       WHERE table_schema = 'public' AND table_name = $1
     )
   `,
-    [table]
+    [table],
   );
 
   const exists = rows[0]?.exists;
@@ -59,7 +70,7 @@ export async function ensureSessionTable(pool: Pool, table: string) {
 
       CREATE TABLE ${q(table)} (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        user_id UUID NOT NULL,
+        user_id ${userIdType} NOT NULL,
         token_hash TEXT UNIQUE NOT NULL,
         expires_at TIMESTAMP NOT NULL,
         last_used_at TIMESTAMP NOT NULL,
@@ -71,18 +82,18 @@ export async function ensureSessionTable(pool: Pool, table: string) {
       CREATE INDEX idx_${table}_user_id ON ${q(table)} (user_id);
     `);
 
-    console.log(`Session table "${table}" created.`);
+    sessionLog("info", `Session table created with FK user_id = ${userIdType}`);
     return;
   }
 
   // Table exists → check for missing columns
   const { rows: cols } = await pool.query(
     `
-    SELECT column_name
+    SELECT column_name, data_type
     FROM information_schema.columns
     WHERE table_schema='public' AND table_name=$1
   `,
-    [table]
+    [table],
   );
 
   const existingCols = cols.map((c) => c.column_name);
@@ -90,19 +101,29 @@ export async function ensureSessionTable(pool: Pool, table: string) {
 
   // Ensure essential columns exist
   if (!existingCols.includes("token_hash")) {
-    migrations.push(`ALTER TABLE ${q(table)} ADD COLUMN token_hash TEXT UNIQUE NOT NULL;`);
+    migrations.push(
+      `ALTER TABLE ${q(table)} ADD COLUMN token_hash TEXT UNIQUE NOT NULL;`,
+    );
   }
   if (!existingCols.includes("last_used_at")) {
-    migrations.push(`ALTER TABLE ${q(table)} ADD COLUMN last_used_at TIMESTAMP NOT NULL DEFAULT NOW();`);
+    migrations.push(
+      `ALTER TABLE ${q(table)} ADD COLUMN last_used_at TIMESTAMP NOT NULL DEFAULT NOW();`,
+    );
   }
   if (!existingCols.includes("revoked_at")) {
-    migrations.push(`ALTER TABLE ${q(table)} ADD COLUMN revoked_at TIMESTAMP NULL;`);
+    migrations.push(
+      `ALTER TABLE ${q(table)} ADD COLUMN revoked_at TIMESTAMP NULL;`,
+    );
   }
   if (!existingCols.includes("expires_at")) {
-    migrations.push(`ALTER TABLE ${q(table)} ADD COLUMN expires_at TIMESTAMP NOT NULL;`);
+    migrations.push(
+      `ALTER TABLE ${q(table)} ADD COLUMN expires_at TIMESTAMP NOT NULL;`,
+    );
   }
   if (!existingCols.includes("user_id")) {
-    migrations.push(`ALTER TABLE ${q(table)} ADD COLUMN user_id UUID NOT NULL;`);
+    migrations.push(
+      `ALTER TABLE ${q(table)} ADD COLUMN user_id ${userIdType} NOT NULL;`,
+    );
   }
 
   if (migrations.length > 0) {
@@ -112,7 +133,7 @@ export async function ensureSessionTable(pool: Pool, table: string) {
     console.log(
       `ℹ️ Session table "${table}" migrated: added columns ${migrations
         .map((s) => s.match(/ADD COLUMN (\w+)/)?.[1])
-        .join(", ")}`
+        .join(", ")}`,
     );
   }
 }

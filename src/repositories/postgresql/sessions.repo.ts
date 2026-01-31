@@ -1,24 +1,50 @@
+// src/repositories/postgresql/sessions.repo.ts
 import { getPostgresPool } from "../../infra/postgresql/db";
 import { SessionRepository } from "../contracts";
+import { q } from "../../infra/postgresql/helpers";
 
 export class PostgresSessionRepository implements SessionRepository {
-  constructor(private readonly table: string) {}
+  /**
+   * @param sessionTable Name of the session table
+   * @param userTable Optional name of the user table for validation
+   */
+  constructor(
+    private sessionTable: string,
+    private userTable?: string,
+  ) {}
 
-  private t() {
-    return `"${this.table}"`;
+  /**
+   * Check if a user exists in the provided user table
+   */
+  private async checkUserExists(userId: string): Promise<boolean> {
+    if (!this.userTable) return true; 
+
+    const { rows } = await getPostgresPool().query(
+      `SELECT 1 FROM ${q(this.userTable)} WHERE id = $1 LIMIT 1`,
+      [userId],
+    );
+    return rows.length > 0;
   }
 
+  /**
+   * Create a new session
+   */
   async create(input: {
     userId: string;
     tokenHash: string;
     expiresAt: Date;
     lastUsedAt: Date;
   }) {
-    const pool = getPostgresPool();
+    const exists = await this.checkUserExists(input.userId);
+    if (!exists) {
+      throw new Error(
+        `User ${input.userId} does not exist in table "${this.userTable}"`,
+      );
+    }
 
-    const result = await pool.query(
+    const { rows } = await getPostgresPool().query(
       `
-      INSERT INTO ${this.t()}
+      INSERT INTO ${q(this.sessionTable)} 
         (user_id, token_hash, expires_at, last_used_at)
       VALUES ($1, $2, $3, $4)
       RETURNING id, user_id, expires_at, last_used_at, revoked_at
@@ -26,32 +52,25 @@ export class PostgresSessionRepository implements SessionRepository {
       [input.userId, input.tokenHash, input.expiresAt, input.lastUsedAt],
     );
 
-    const row = result.rows[0];
-
-    return {
-      id: row.id,
-      userId: row.user_id,
-      expiresAt: row.expires_at,
-      lastUsedAt: row.last_used_at,
-      revokedAt: row.revoked_at,
-    };
+    return rows[0];
   }
 
+  /**
+   * Find a session by token hash
+   */
   async findByTokenHash(tokenHash: string) {
-    const pool = getPostgresPool();
-
-    const result = await pool.query(
+    const { rows } = await getPostgresPool().query(
       `
       SELECT id, user_id, expires_at, last_used_at, revoked_at
-      FROM ${this.t()}
+      FROM ${q(this.sessionTable)}
       WHERE token_hash = $1
       `,
       [tokenHash],
     );
 
-    const row = result.rows[0];
-    if (!row) return null;
+    if (!rows.length) return null;
 
+    const row = rows[0];
     return {
       id: row.id,
       userId: row.user_id,
@@ -61,12 +80,13 @@ export class PostgresSessionRepository implements SessionRepository {
     };
   }
 
+  /**
+   * Update the last_used_at timestamp
+   */
   async updateLastUsed(tokenHash: string, date: Date) {
-    const pool = getPostgresPool();
-
-    await pool.query(
+    await getPostgresPool().query(
       `
-      UPDATE ${this.t()}
+      UPDATE ${q(this.sessionTable)}
       SET last_used_at = $1
       WHERE token_hash = $2
         AND revoked_at IS NULL
@@ -75,16 +95,18 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
+  /**
+   * Rotate a session token
+   */
   async rotateToken(
     oldTokenHash: string,
     newTokenHash: string,
     rotatedAt: Date,
   ) {
-    const pool = getPostgresPool();
-
-    const result = await pool.query(
+    let isRotaed = false;
+    const result = await getPostgresPool().query(
       `
-      UPDATE ${this.t()}
+      UPDATE ${q(this.sessionTable)}
       SET token_hash = $1, last_used_at = $2
       WHERE token_hash = $3
         AND revoked_at IS NULL
@@ -93,17 +115,19 @@ export class PostgresSessionRepository implements SessionRepository {
       [newTokenHash, rotatedAt, oldTokenHash],
     );
 
-    if (result.rowCount === null) return false;
-
-    return result.rowCount > 0;
+    if (result.rowCount && result.rowCount > 0) {
+      isRotaed = true;
+    }
+    return isRotaed;
   }
 
+  /**
+   * Revoke a session by token hash
+   */
   async revokeByTokenHash(tokenHash: string) {
-    const pool = getPostgresPool();
-
-    await pool.query(
+    await getPostgresPool().query(
       `
-      UPDATE ${this.t()}
+      UPDATE ${q(this.sessionTable)}
       SET revoked_at = NOW()
       WHERE token_hash = $1
         AND revoked_at IS NULL
@@ -112,14 +136,14 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
+  /**
+   * Revoke oldest sessions to enforce max concurrent sessions
+   */
   async revokeOldestForUser(userId: string, keepLatest: number) {
-    const pool = getPostgresPool();
-
-    // Get active sessions ordered by last_used_at ASC
-    const result = await pool.query(
+    const { rows: sessions } = await getPostgresPool().query(
       `
       SELECT id
-      FROM ${this.t()}
+      FROM ${q(this.sessionTable)}
       WHERE user_id = $1
         AND revoked_at IS NULL
       ORDER BY last_used_at ASC
@@ -127,19 +151,16 @@ export class PostgresSessionRepository implements SessionRepository {
       [userId],
     );
 
-    const sessions = result.rows;
     const toRevoke = sessions.slice(
       0,
       Math.max(0, sessions.length - keepLatest),
     );
-
-    if (toRevoke.length === 0) return;
+    if (!toRevoke.length) return;
 
     const ids = toRevoke.map((s) => s.id);
-
-    await pool.query(
+    await getPostgresPool().query(
       `
-      UPDATE ${this.t()}
+      UPDATE ${q(this.sessionTable)}
       SET revoked_at = NOW()
       WHERE id = ANY($1::uuid[])
       `,
