@@ -17,17 +17,6 @@ export type SessionOptions = {
 
 };
 
-export interface SessionDB {
-  sessionRepo: any;
-}
-
-export interface SessionResult<T = any> {
-  success: boolean;
-  data?: T;
-  httpCode: number;
-  message: string;
-}
-
 export type InitPostgresOptions = {
   userTableName?: string;
 };
