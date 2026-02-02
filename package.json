@@ -4,34 +4,47 @@
   "description": "A framework-agnostic, database-agnostic session management library for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc --declaration"
   },
   "keywords": [
-    "authentication", "auth", "auth-library", "node-auth", "framework-agnostic",
-    "backend-auth", "session-auth", "password-auth", "magic-link", "passwordless",
-    "login", "signup", "security", "user-auth", "nodejs", "typescript",
-    "clean-architecture", "hexagonal-architecture", "backend", "api-auth",
-    "express-auth", "nest-auth"
+    "authentication",
+    "auth",
+    "auth-library",
+    "node-auth",
+    "framework-agnostic",
+    "backend-auth",
+    "session-auth",
+    "password-auth",
+    "magic-link",
+    "passwordless",
+    "login",
+    "signup",
+    "security",
+    "user-auth",
+    "nodejs",
+    "typescript",
+    "clean-architecture",
+    "hexagonal-architecture",
+    "backend",
+    "api-auth",
+    "express-auth",
+    "nest-auth"
   ],
   "author": "",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "@nestjs/common": "^11.1.9",
-    "@zxcvbn-ts/core": "^3.0.4",
     "bcrypt": "^6.0.0",
-    "js-sha1": "^0.7.0",
     "mongoose": "^9.0.1",
-    "node-fetch": "^3.3.2",
     "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
-    "@types/express": "^5.0.6",
-    "@types/node-fetch": "^2.6.13",
     "@types/pg": "^8.16.0"
   },
   "publishConfig": {

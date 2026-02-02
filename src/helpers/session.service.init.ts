@@ -1,6 +1,6 @@
 import { SessionOptions } from "../types";
 import { SessionService } from "../services/session.service";
-import { SessionResult } from "../types";
+import { SessionResult } from "../interfaces"
 import { sessionLog } from "../utils/logger";
 
 /**
