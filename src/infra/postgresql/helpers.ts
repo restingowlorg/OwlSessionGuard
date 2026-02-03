@@ -41,12 +41,14 @@ export async function getUserPrimaryKey(pool: Pool, table: string) {
 export async function ensureSessionTable(
   pool: Pool,
   table: string,
-  userTable?: string,
+  userTable: string,
 ) {
   let userIdType = "UUID"; // default type
   if (userTable) {
+    sessionLog("info", `Detecting primary key type for user table "${userTable}"`);
     const pk = await getUserPrimaryKey(pool, userTable);
-    userIdType = pk.type.toUpperCase(); // e.g., 'UUID', 'BIGINT', 'INTEGER'
+    userIdType = pk.type.toUpperCase(); 
+    sessionLog("info", `Detected user_id type: ${userIdType}`);
   }
 
   // Check if table exists
