@@ -21,7 +21,7 @@ export function getPostgresPool(): Pool {
 export async function initPostgres(
   connectionString: string,
   sessionTableName = "sessions",
-  userTable?: string,
+  userTable: string,
 ): Promise<SessionDB> {
   if (pool) {
     throw new Error("PostgreSQL already initialized");

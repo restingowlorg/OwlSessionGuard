@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "crypto";
 import { SessionRepository } from "../repositories/contracts";
-import { SessionResult } from "../types";
+import { SessionResult } from "../interfaces";
 
 export class SessionService {
   constructor(

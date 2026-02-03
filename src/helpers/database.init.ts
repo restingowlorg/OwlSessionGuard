@@ -16,7 +16,8 @@ export async function initDatabase(options: SessionOptions) {
       if (!options.postgresUrl) throw new Error("postgresUrl is required");
       const pgDb = await initPostgres(
         options.postgresUrl,
-        options.postgresSessionTable
+        options.postgresSessionTable,
+        options.userTable
       );
       sessionLog("info", "Successfully connected to PostgreSQL");
       return pgDb;

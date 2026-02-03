@@ -8,7 +8,7 @@ export type SessionOptions = {
 
   // Optional custom table/collection names (for Postgres)
   postgresSessionTable?: string;
-  userTable?: string;
+  userTable: string;
 
   // Session configuration
   sessionTtlSeconds?: number; // Absolute TTL

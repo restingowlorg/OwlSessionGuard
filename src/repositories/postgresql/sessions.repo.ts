@@ -10,14 +10,17 @@ export class PostgresSessionRepository implements SessionRepository {
    */
   constructor(
     private sessionTable: string,
-    private userTable?: string,
+    private userTable: string,
   ) {}
 
   /**
    * Check if a user exists in the provided user table
    */
   private async checkUserExists(userId: string): Promise<boolean> {
-    if (!this.userTable) return true; 
+    if (!this.userTable) {
+      console.log("❌ User table name not provided for user existence check.");
+      throw new Error("User table name not provided for user existence check");
+    }
 
     const { rows } = await getPostgresPool().query(
       `SELECT 1 FROM ${q(this.userTable)} WHERE id = $1 LIMIT 1`,
