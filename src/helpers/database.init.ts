@@ -17,7 +17,7 @@ export async function initDatabase(options: SessionOptions) {
       const pgDb = await initPostgres(
         options.postgresUrl,
         options.postgresSessionTable,
-        options.userTable
+        // options.userTable
       );
       sessionLog("info", "Successfully connected to PostgreSQL");
       return pgDb;

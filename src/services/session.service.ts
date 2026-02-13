@@ -24,7 +24,7 @@ export class SessionService {
   // ------------------------------
   // Create Session
   // ------------------------------
-  async create(userId: string, ttlSeconds: number): Promise<SessionResult> {
+  async create(userId: number | string, ttlSeconds: number): Promise<SessionResult> {
     try {
       if (this.maxSessionsPerUser && this.maxSessionsPerUser > 0) {
         await this.sessions.revokeOldestForUser(

@@ -1,12 +1,12 @@
 export interface SessionRepository {
   create(input: {
-    userId: string;
+    userId: number | string;
     tokenHash: string;
     expiresAt: Date;
     lastUsedAt: Date;
   }): Promise<{
     id: string;
-    userId: string;
+    userId: number | string;
     expiresAt: Date;
     lastUsedAt: Date;
     revokedAt: Date | null;
@@ -14,7 +14,7 @@ export interface SessionRepository {
 
   findByTokenHash(tokenHash: string): Promise<{
     id: string;
-    userId: string;
+    userId:  number | string;
     expiresAt: Date;
     lastUsedAt: Date;
     revokedAt: Date | null;
@@ -30,5 +30,5 @@ export interface SessionRepository {
 
   revokeByTokenHash(tokenHash: string): Promise<void>;
 
-  revokeOldestForUser(userId: string, keepLatest: number): Promise<void>;
+  revokeOldestForUser(userId: number | string, keepLatest: number): Promise<void>;
 }

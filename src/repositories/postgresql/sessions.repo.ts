@@ -1,68 +1,80 @@
 // src/repositories/postgresql/sessions.repo.ts
-import { getPostgresPool } from "../../infra/postgresql/db";
+import { Pool } from "pg";
 import { SessionRepository } from "../contracts";
 import { q } from "../../infra/postgresql/helpers";
+import { randomUUID } from "crypto";
+
+type UserId = string | number;
 
 export class PostgresSessionRepository implements SessionRepository {
-  /**
-   * @param sessionTable Name of the session table
-   * @param userTable Optional name of the user table for validation
-   */
-  constructor(
-    private sessionTable: string,
-    private userTable: string,
+  private constructor(
+    private readonly pool: Pool,
+    private readonly sessionTable: string,
   ) {}
 
   /**
-   * Check if a user exists in the provided user table
+   * Async initializer to check table exists
    */
-  private async checkUserExists(userId: string): Promise<boolean> {
-    if (!this.userTable) {
-      console.log("❌ User table name not provided for user existence check.");
-      throw new Error("User table name not provided for user existence check");
-    }
-
-    const { rows } = await getPostgresPool().query(
-      `SELECT 1 FROM ${q(this.userTable)} WHERE id = $1 LIMIT 1`,
-      [userId],
-    );
-    return rows.length > 0;
+  public static async init(pool: Pool, sessionTable: string) {
+    const repo = new PostgresSessionRepository(pool, sessionTable);
+    await repo.checkTableExists(); // check table immediately
+    return repo;
   }
 
-  /**
-   * Create a new session
-   */
+  private async checkTableExists(): Promise<void> {
+    const { rows } = await this.pool.query(
+      `
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = $1
+      )
+      `,
+      [this.sessionTable],
+    );
+
+    if (!rows[0].exists) {
+      throw new Error(
+        `Session table "${this.sessionTable}" does not exist. Please create it first.`,
+      );
+    }
+  }
+
   async create(input: {
-    userId: string;
+    userId: UserId;
     tokenHash: string;
     expiresAt: Date;
     lastUsedAt: Date;
   }) {
-    const exists = await this.checkUserExists(input.userId);
-    if (!exists) {
-      throw new Error(
-        `User ${input.userId} does not exist in table "${this.userTable}"`,
-      );
-    }
 
-    const { rows } = await getPostgresPool().query(
+    console.log("session lib userId", input.userId);
+    const id = randomUUID();
+    console.log("uuid", id);
+    const { rows } = await this.pool.query(
       `
       INSERT INTO ${q(this.sessionTable)} 
-        (user_id, token_hash, expires_at, last_used_at)
-      VALUES ($1, $2, $3, $4)
+        (id , user_id, token_hash, expires_at, last_used_at)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING id, user_id, expires_at, last_used_at, revoked_at
       `,
-      [input.userId, input.tokenHash, input.expiresAt, input.lastUsedAt],
+      [id, input.userId, input.tokenHash, input.expiresAt, input.lastUsedAt],
     );
 
-    return rows[0];
+    const row = rows[0];
+    console.log("row ID", row.id);
+
+    return {
+      id: row.id,
+      userId: row.user_id,
+      expiresAt: row.expires_at,
+      lastUsedAt: row.last_used_at,
+      revokedAt: row.revoked_at,
+    };
   }
 
-  /**
-   * Find a session by token hash
-   */
   async findByTokenHash(tokenHash: string) {
-    const { rows } = await getPostgresPool().query(
+    const { rows } = await this.pool.query(
       `
       SELECT id, user_id, expires_at, last_used_at, revoked_at
       FROM ${q(this.sessionTable)}
@@ -74,6 +86,7 @@ export class PostgresSessionRepository implements SessionRepository {
     if (!rows.length) return null;
 
     const row = rows[0];
+
     return {
       id: row.id,
       userId: row.user_id,
@@ -83,11 +96,8 @@ export class PostgresSessionRepository implements SessionRepository {
     };
   }
 
-  /**
-   * Update the last_used_at timestamp
-   */
   async updateLastUsed(tokenHash: string, date: Date) {
-    await getPostgresPool().query(
+    await this.pool.query(
       `
       UPDATE ${q(this.sessionTable)}
       SET last_used_at = $1
@@ -98,16 +108,16 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
-  /**
-   * Rotate a session token
-   */
   async rotateToken(
     oldTokenHash: string,
     newTokenHash: string,
     rotatedAt: Date,
-  ) {
-    let isRotaed = false;
-    const result = await getPostgresPool().query(
+  ): Promise<boolean> {
+    console.log('oldTokenHash',oldTokenHash);
+    console.log('newTokenHash',newTokenHash);
+    console.log('rotatedAt',rotatedAt);
+    
+    const result = await this.pool.query(
       `
       UPDATE ${q(this.sessionTable)}
       SET token_hash = $1, last_used_at = $2
@@ -118,17 +128,11 @@ export class PostgresSessionRepository implements SessionRepository {
       [newTokenHash, rotatedAt, oldTokenHash],
     );
 
-    if (result.rowCount && result.rowCount > 0) {
-      isRotaed = true;
-    }
-    return isRotaed;
+    return (result.rowCount ?? 0) > 0;
   }
 
-  /**
-   * Revoke a session by token hash
-   */
   async revokeByTokenHash(tokenHash: string) {
-    await getPostgresPool().query(
+    await this.pool.query(
       `
       UPDATE ${q(this.sessionTable)}
       SET revoked_at = NOW()
@@ -139,11 +143,8 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
-  /**
-   * Revoke oldest sessions to enforce max concurrent sessions
-   */
-  async revokeOldestForUser(userId: string, keepLatest: number) {
-    const { rows: sessions } = await getPostgresPool().query(
+  async revokeOldestForUser(userId: UserId, keepLatest: number) {
+    const { rows } = await this.pool.query(
       `
       SELECT id
       FROM ${q(this.sessionTable)}
@@ -154,18 +155,17 @@ export class PostgresSessionRepository implements SessionRepository {
       [userId],
     );
 
-    const toRevoke = sessions.slice(
-      0,
-      Math.max(0, sessions.length - keepLatest),
-    );
+    const toRevoke = rows.slice(0, Math.max(0, rows.length - keepLatest));
+
     if (!toRevoke.length) return;
 
     const ids = toRevoke.map((s) => s.id);
-    await getPostgresPool().query(
+
+    await this.pool.query(
       `
       UPDATE ${q(this.sessionTable)}
       SET revoked_at = NOW()
-      WHERE id = ANY($1::uuid[])
+      WHERE id = ANY($1)
       `,
       [ids],
     );

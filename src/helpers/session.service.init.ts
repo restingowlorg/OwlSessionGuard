@@ -19,7 +19,7 @@ export async function initSessionServices(db: any, options: SessionOptions) {
   );
 
   return {
-    create: (userId: string, ttl?: number): Promise<SessionResult> =>
+    create: (userId: number | string, ttl?: number): Promise<SessionResult> =>
       sessionService.create(
         userId,
         ttl ?? options.sessionTtlSeconds ?? 60 * 60 * 24 * 7,
