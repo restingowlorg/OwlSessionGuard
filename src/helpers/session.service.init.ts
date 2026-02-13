@@ -7,6 +7,7 @@ import { sessionLog } from "../utils/logger";
  * Initialize session service
  */
 export async function initSessionServices(db: any, options: SessionOptions) {
+  
   const sessionService = new SessionService(
     db.sessionRepo,
     options.maxSessionsPerUser,

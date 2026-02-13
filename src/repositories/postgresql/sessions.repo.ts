@@ -1,10 +1,12 @@
 // src/repositories/postgresql/sessions.repo.ts
 import { Pool } from "pg";
 import { SessionRepository } from "../contracts";
-import { q } from "../../infra/postgresql/helpers";
 import { randomUUID } from "crypto";
+import { UserId } from "../../types";
 
-type UserId = string | number;
+function q(identifier: string) {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
 
 export class PostgresSessionRepository implements SessionRepository {
   private constructor(
@@ -12,42 +14,19 @@ export class PostgresSessionRepository implements SessionRepository {
     private readonly sessionTable: string,
   ) {}
 
-  /**
-   * Async initializer to check table exists
-   */
+  // Factory method to initialize the repository with a PostgreSQL connection pool
   public static async init(pool: Pool, sessionTable: string) {
     const repo = new PostgresSessionRepository(pool, sessionTable);
-    await repo.checkTableExists(); // check table immediately
     return repo;
   }
 
-  private async checkTableExists(): Promise<void> {
-    const { rows } = await this.pool.query(
-      `
-      SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = $1
-      )
-      `,
-      [this.sessionTable],
-    );
-
-    if (!rows[0].exists) {
-      throw new Error(
-        `Session table "${this.sessionTable}" does not exist. Please create it first.`,
-      );
-    }
-  }
-
+  // Create a new session for a user
   async create(input: {
     userId: UserId;
     tokenHash: string;
     expiresAt: Date;
     lastUsedAt: Date;
   }) {
-
     console.log("session lib userId", input.userId);
     const id = randomUUID();
     console.log("uuid", id);
@@ -73,6 +52,7 @@ export class PostgresSessionRepository implements SessionRepository {
     };
   }
 
+  // Find a session by its token hash
   async findByTokenHash(tokenHash: string) {
     const { rows } = await this.pool.query(
       `
@@ -96,6 +76,7 @@ export class PostgresSessionRepository implements SessionRepository {
     };
   }
 
+  // Update the last used timestamp of a session
   async updateLastUsed(tokenHash: string, date: Date) {
     await this.pool.query(
       `
@@ -108,15 +89,16 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
+  // Rotate a session token by updating the token hash and last used timestamp
   async rotateToken(
     oldTokenHash: string,
     newTokenHash: string,
     rotatedAt: Date,
   ): Promise<boolean> {
-    console.log('oldTokenHash',oldTokenHash);
-    console.log('newTokenHash',newTokenHash);
-    console.log('rotatedAt',rotatedAt);
-    
+    console.log("oldTokenHash", oldTokenHash);
+    console.log("newTokenHash", newTokenHash);
+    console.log("rotatedAt", rotatedAt);
+
     const result = await this.pool.query(
       `
       UPDATE ${q(this.sessionTable)}
@@ -131,6 +113,7 @@ export class PostgresSessionRepository implements SessionRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  // Revoke a session by its token hash
   async revokeByTokenHash(tokenHash: string) {
     await this.pool.query(
       `
@@ -143,6 +126,7 @@ export class PostgresSessionRepository implements SessionRepository {
     );
   }
 
+  // Revoke all but the latest N sessions for a user
   async revokeOldestForUser(userId: UserId, keepLatest: number) {
     const { rows } = await this.pool.query(
       `
