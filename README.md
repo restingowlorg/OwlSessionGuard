@@ -114,11 +114,11 @@ export interface AuthResult<T = any> {
 
 ```ts
 // Signup
-const signupResult = await auth.signup("user@test.com", "username", "StrongPassword123!");
+const signupResult = await auth.signup("user@test.com", "username", "your-strong-password");
 res.status(signupResult.httpCode).json(signupResult);
 
 // Login
-const loginResult = await auth.login("user@test.com", "StrongPassword123!");
+const loginResult = await auth.login("user@test.com", "your-strong-password");
 if (loginResult.success) {
   res.cookie("AUTH_SESSION", loginResult.data.sessionToken, {
     httpOnly: true,
