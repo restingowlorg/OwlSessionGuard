@@ -60,4 +60,30 @@ export class SessionStateMachine {
     }
     return { isExpired: false };
   }
+
+  /**
+   * Gets the next status based on an action or reason.
+   */
+  public static getNextStatus(
+    currentStatus: SessionStatus,
+    reason: SessionReasonCode,
+  ): SessionStatus {
+    if (
+      reason === SessionReasonCode.ROTATION &&
+      currentStatus === SessionStatus.ACTIVE
+    ) {
+      return SessionStatus.ROTATED;
+    }
+
+    if (
+      reason === SessionReasonCode.IDLE_TIMEOUT ||
+      reason === SessionReasonCode.ABSOLUTE_TIMEOUT ||
+      reason === SessionReasonCode.ROTATION_GRACE_EXPIRED
+    ) {
+      return SessionStatus.EXPIRED;
+    }
+
+    // Default to REVOKED for everything else (manual logout, security violations, etc.)
+    return SessionStatus.REVOKED;
+  }
 }

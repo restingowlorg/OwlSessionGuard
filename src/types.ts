@@ -78,16 +78,23 @@ export interface SessionRecord {
 /**
  * Standard response wrapper for session operations.
  */
-export interface SessionOpResult<T> {
-  success: boolean;
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-    reason?: SessionReasonCode;
-  };
-  httpCode: number;
-}
+export type SessionOpResult<T> =
+  | {
+      success: true;
+      data: T;
+      httpCode: number;
+      error?: never;
+    }
+  | {
+      success: false;
+      data?: never;
+      error: {
+        code: string;
+        message: string;
+        reason?: SessionReasonCode;
+      };
+      httpCode: number;
+    };
 
 /**
  * Explicit success result for operations that don't return data.

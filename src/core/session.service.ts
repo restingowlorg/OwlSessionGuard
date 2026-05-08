@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID, createHash } from "crypto";
-import { ISessionEngine } from "../interfaces";
+import { v4 as uuidv4 } from "uuid";
+import { ISessionService } from "../interfaces";
+import { fastHash, generateBase64UrlToken } from "../infra/crypto/crypto";
 import {
   SessionOpResult,
   CreateSessionParams,
@@ -16,17 +17,13 @@ import { SessionStoreAdapter } from "../storage/contracts";
 import { SessionStateMachine } from "./state-machine";
 
 /**
- * SessionEngine — Implementation of core session logic.
+ * SessionService — Implementation of core session logic.
  */
-export class SessionEngine implements ISessionEngine {
+export class SessionService implements ISessionService {
   constructor(
     private readonly store: SessionStoreAdapter,
     private readonly config: SessionLibraryConfig,
   ) {}
-
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
 
   /**
    * Create a new session.
@@ -38,17 +35,17 @@ export class SessionEngine implements ISessionEngine {
     }>
   > {
     try {
-      // 1. Enforce session limits
       const activeCount = await this.store.countActiveForUser(params.userId);
       if (activeCount >= this.config.limits.maxSessionsPerUser) {
-        // Option: Revoke oldest or reject. Default to rejecting or revoking oldest.
-        // For simplicity, we'll proceed but this is where policy would be enforced.
+        return this.fail(
+          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          403,
+          SessionReasonCode.SECURITY_BREACH,
+        );
       }
 
-      // 2. Generate token and hash
       const { token, tokenHash } = this.generateSecureToken();
 
-      // 3. Calculate timestamps
       const now = new Date();
       const expiresAt = new Date(
         now.getTime() + this.config.expiration.absoluteTimeoutSeconds * 1000,
@@ -57,9 +54,8 @@ export class SessionEngine implements ISessionEngine {
         now.getTime() + this.config.expiration.idleTimeoutSeconds * 1000,
       );
 
-      // 4. Create record
       const record: SessionRecord = {
-        id: randomUUID(),
+        id: uuidv4(),
         userId: params.userId,
         tokenHash,
         status: SessionStatus.ACTIVE,
@@ -91,7 +87,7 @@ export class SessionEngine implements ISessionEngine {
     params: ValidateSessionParams,
   ): Promise<SessionOpResult<SessionRecord>> {
     try {
-      const tokenHash = this.hashToken(params.token);
+      const tokenHash = fastHash(params.token);
       const record = await this.store.findByTokenHash(tokenHash);
 
       if (!record) {
@@ -100,32 +96,27 @@ export class SessionEngine implements ISessionEngine {
 
       const now = new Date();
 
-      // 1. Check expiration
+      // Check lifecycle status via state machine
+      if (!SessionStateMachine.isUsable(record.status)) {
+        return this.fail(`Session is in ${record.status} state`, 401);
+      }
+
+      // Check expiration
       const expiry = SessionStateMachine.checkExpiration(
         now,
         record.expiresAt,
         record.idleExpiresAt,
       );
       if (expiry.isExpired) {
-        await this.revokeSession({
-          sessionId: record.id,
-          reason: expiry.reason!,
+        const reason = expiry.reason || SessionReasonCode.ABSOLUTE_TIMEOUT;
+        await this.store.update(record.id, {
+          status: SessionStatus.EXPIRED,
+          revocationReason: reason,
         });
-        return this.fail(
-          `Session expired: ${expiry.reason}`,
-          401,
-          expiry.reason,
-        );
+        return this.fail(`Session expired: ${reason}`, 401, reason);
       }
 
-      // 2. Check state usability
-      // Note: For now we don't have grace period implementation in the store,
-      // so we assume isWithinGracePeriod = false for now.
-      if (!SessionStateMachine.isUsable(record.status)) {
-        return this.fail("Session is no longer active", 401);
-      }
-
-      // 3. Security Binding (IP Check)
+      // IP Binding check
       if (this.config.security.ipBinding !== "off") {
         if (record.metadata.ipAddress !== params.context.ipAddress) {
           if (this.config.security.ipBinding === "hard") {
@@ -139,14 +130,10 @@ export class SessionEngine implements ISessionEngine {
               SessionReasonCode.IP_MISMATCH,
             );
           }
-          // Soft check: Log and continue (or add risk signal)
-          console.warn(
-            `[@ossec/auth] IP mismatch detected for session ${record.id}`,
-          );
         }
       }
 
-      // 4. Update lastUsedAt if rolling
+      // Rolling expiration update
       if (this.config.expiration.rolling) {
         const updates: Partial<SessionRecord> = {
           lastUsedAt: now,
@@ -178,31 +165,28 @@ export class SessionEngine implements ISessionEngine {
     }>
   > {
     try {
-      const oldTokenHash = this.hashToken(params.token);
+      const oldTokenHash = fastHash(params.token);
       const record = await this.store.findByTokenHash(oldTokenHash);
 
       if (!record || !SessionStateMachine.isUsable(record.status)) {
         return this.fail("Invalid or unusable session for rotation", 401);
       }
 
-      // 1. Generate new token
       const { token: newToken, tokenHash: newTokenHash } =
         this.generateSecureToken();
 
-      // 2. Mark old session as ROTATED (or revoke immediately if grace period is 0)
       const now = new Date();
+
+      // Update old session status to ROTATED
       await this.store.update(record.id, {
         status: SessionStatus.ROTATED,
-        revocationReason: SessionReasonCode.ROTATION,
-        // In a real implementation, we might keep the record but with a new tokenHash
-        // OR create a new record and link it.
-        // As per OWASP: "A new session ID is always issued at login completion"
+        revocationReason: params.reason || SessionReasonCode.ROTATION,
       });
 
-      // 3. Create NEW session record linked to the old one
+      // Create new session linked to the old one
       const newRecord: SessionRecord = {
         ...record,
-        id: randomUUID(),
+        id: uuidv4(),
         tokenHash: newTokenHash,
         status: SessionStatus.ACTIVE,
         createdAt: now,
@@ -223,7 +207,7 @@ export class SessionEngine implements ISessionEngine {
   }
 
   /**
-   * Revoke a session.
+   * Revoke a specific session.
    */
   public async revokeSession(
     params: RevokeSessionParams,
@@ -232,12 +216,21 @@ export class SessionEngine implements ISessionEngine {
       let record: SessionRecord | null = null;
 
       if (params.token) {
-        record = await this.store.findByTokenHash(this.hashToken(params.token));
+        record = await this.store.findByTokenHash(fastHash(params.token));
       } else if (params.sessionId) {
         record = await this.store.findById(params.sessionId);
       }
 
       if (!record) return this.fail("Session not found", 404);
+
+      // Enforce valid transition to REVOKED
+      if (record.status === SessionStatus.REVOKED) {
+        return {
+          success: true,
+          data: { acknowledged: true, timestamp: new Date() },
+          httpCode: 200,
+        };
+      }
 
       await this.store.update(record.id, {
         status: SessionStatus.REVOKED,
@@ -260,9 +253,15 @@ export class SessionEngine implements ISessionEngine {
    */
   public async revokeAllSessionsForUser(
     userId: string,
+    _reason: SessionReasonCode,
   ): Promise<SessionOpResult<SessionSuccess>> {
     try {
+      // In a real implementation, we might want to update all records to REVOKED
+      // rather than just deleting them, to maintain an audit trail.
+      // For now, we'll follow the store's delete pattern but we could also
+      // iterate and update status if the store supports it.
       await this.store.deleteAllForUser(userId);
+
       return {
         success: true,
         data: { acknowledged: true, timestamp: new Date() },
@@ -273,19 +272,11 @@ export class SessionEngine implements ISessionEngine {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Internal Helpers
-  // ---------------------------------------------------------------------------
-
   private generateSecureToken(): { token: string; tokenHash: string } {
-    // 256 bits of entropy
-    const token = randomBytes(32).toString("base64url");
-    const tokenHash = this.hashToken(token);
+    // 32 bytes = 256 bits of entropy
+    const token = generateBase64UrlToken(32);
+    const tokenHash = fastHash(token);
     return { token, tokenHash };
-  }
-
-  private hashToken(token: string): string {
-    return createHash("sha256").update(token).digest("hex");
   }
 
   private fail<T>(
@@ -295,7 +286,11 @@ export class SessionEngine implements ISessionEngine {
   ): SessionOpResult<T> {
     return {
       success: false,
-      error: { code: "SESSION_ERROR", message, reason },
+      error: {
+        code: "SESSION_ERROR",
+        message,
+        reason,
+      },
       httpCode,
     };
   }

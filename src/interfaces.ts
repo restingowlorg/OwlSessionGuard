@@ -10,9 +10,9 @@ import {
 } from "./types";
 
 /**
- * ISessionEngine — The core framework-agnostic session handling logic.
+ * ISessionService — The core framework-agnostic session handling logic.
  */
-export interface ISessionEngine {
+export interface ISessionService {
   /**
    * Create a new session for a successfully authenticated user.
    */
