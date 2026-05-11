@@ -1,26 +1,21 @@
-import * as bcrypt from 'bcrypt';
-import * as crypto from 'crypto';
+import * as CryptoJS from "crypto-js";
 
-const SALT_ROUNDS = 10;
-
-// ---------------- Password Helpers ----------------
-export function hashPassword(password: string) {
-  return bcrypt.hash(password, SALT_ROUNDS);
+// ---------------- Session Helpers (Performance Optimized) ----------------
+/**
+ * Fast one-way hash for session tokens (SHA-256).
+ * Used for session lookups where bcrypt is too slow.
+ */
+export function fastHash(data: string): string {
+  return CryptoJS.SHA256(data).toString(CryptoJS.enc.Hex);
 }
 
-export function verifyPassword(password: string, hash: string) {
-  return bcrypt.compare(password, hash);
-}
-
-// ---------------- Magic Link Helpers ----------------
-export function generateToken(length = 32) {
-  return crypto.randomBytes(length).toString('hex');
-}
-
-export async function hashToken(token: string) {
-  return bcrypt.hash(token, SALT_ROUNDS);
-}
-
-export async function verifyToken(token: string, hash: string) {
-  return bcrypt.compare(token, hash);
+/**
+ * Generates a Base64URL encoded secure token for sessions.
+ */
+export function generateBase64UrlToken(length = 32): string {
+  return CryptoJS.lib.WordArray.random(length)
+    .toString(CryptoJS.enc.Base64)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }

@@ -1,241 +1,129 @@
+# Owl Session Management Library
 
----
-
-# 🛡️ MVP Auth
-
-**MVP Auth** is a **framework-agnostic** and **database-agnostic** Node.js authentication library providing:
-
-* Credentials authentication (`email + username + password`)
-* Magic link (passwordless) authentication
-* Session-based authentication (**token-based sessions with rotation**)
-
-It exposes **business-level services** (`AuthManager`) and returns **structured results** (`AuthResult`) without leaking sensitive information.
-
----
+A framework-agnostic and database-agnostic session management library for Node.js applications. It provides robust session handling, security binding, and token rotation features.
 
 ## Features
 
-* ✅ Credentials authentication (email + username + password)
-* 🔗 Magic Link (passwordless) authentication
-* 🍪 Session-based authentication with **secure token sessions**
-* 🔄 **Token rotation on every session validation**
-* 💤 **Idle session expiration** (configurable)
-* 🧱 Max concurrent sessions per user with automatic revocation
-* 🧩 Framework agnostic (Express, NestJS, Fastify, custom)
-* 🗄️ Database agnostic (PostgreSQL, MongoDB)
-* 🧪 Strong typing with unified `AuthResult` and `IAuthManager`
-* 🧱 Clean architecture: `AuthManager → Services → Repositories → Infra`
-* 🔒 Secure password hashing & token handling
-* 🔄 PostgreSQL schema auto-validation and migration
-* 🛡️ OWASP-aligned password strength and session handling
-
----
+- Framework Agnostic: Works with Express, Fastify, NestJS, or any other Node.js framework.
+- Database Agnostic: Pluggable storage adapters (Memory, Redis, MongoDB, etc.).
+- Secure Token Sessions: Uses CSPRNG-generated tokens (256-bit entropy).
+- Token Rotation: Automatic or manual token rotation to prevent session hijacking.
+- Security Binding: Optional IP address and fingerprint binding.
+- Lifecycle Management: Built-in state machine for active, rotated, revoked, and expired states.
+- Idle Expiration: Support for sliding (rolling) and absolute session timeouts.
+- Concurrent Session Limits: Enforce maximum active sessions per user.
 
 ## Installation
 
 ```bash
-npm install @restingowlorg/mvp-auth
+npm install @restingowlorg/owl-session
 ```
 
-**Environment Variables:**
+## Core Components
 
-* PostgreSQL: `POSTGRES_URL`
-* MongoDB: `MONGO_URI`
+### SessionService
 
----
+The `SessionService` is the primary entry point for managing sessions. It handles creation, validation, rotation, and revocation.
 
-## Initialization
+### SessionStoreAdapter
 
-### PostgreSQL
+The library uses a pluggable storage system. You can use the built-in `MemoryStoreAdapter` or implement your own by following the `SessionStoreAdapter` interface.
 
-```ts
-import { AuthManager } from "@restingowlorg/mvp-auth";
+## Usage
 
-const auth = await AuthManager.init({
-  dbType: "postgres",
-  postgresUrl: process.env.POSTGRES_URL!,
-  authTypes: ["credentials", "magic-link"],
-  sessionTtlSeconds: 60 * 60 * 24 * 7, // 7 days
-  idleTtlSeconds: 60, // 1 min idle expiration
-  maxSessionsPerUser: 3, // Limit concurrent sessions
+### Initialization
+
+```typescript
+import { SessionService } from "@restingowlorg/owl-session";
+import { MemoryStoreAdapter } from "@restingowlorg/owl-session/storage";
+
+const store = new MemoryStoreAdapter();
+const config = {
+  env: "production",
+  expiration: {
+    idleTimeoutSeconds: 3600,
+    absoluteTimeoutSeconds: 86400,
+    rolling: true,
+  },
+  security: {
+    ipBinding: "hard",
+  },
+  limits: {
+    maxSessionsPerUser: 5,
+  },
+  // ... other configuration
+};
+
+const sessionService = new SessionService(store, config);
+```
+
+### Creating a Session
+
+```typescript
+const result = await sessionService.createSession({
+  userId: "user_uuid_123",
+  roles: ["admin"],
+  scopes: ["read", "write"],
+  metadata: {
+    ipAddress: "192.168.1.1",
+    userAgent: "Mozilla/5.0...",
+  },
 });
+
+if (result.success) {
+  const { token, record } = result.data;
+  // Send token to client (e.g., via Set-Cookie)
+}
 ```
 
-### MongoDB
+### Validating a Session
 
-```ts
-const auth = await AuthManager.init({
-  dbType: "mongo",
-  mongoUri: process.env.MONGO_URI!,
-  authTypes: ["credentials"],
-  sessionTtlSeconds: 60 * 60 * 24 * 7,
-  idleTtlSeconds: 60,
-  maxSessionsPerUser: 3,
+```typescript
+const result = await sessionService.validateSession({
+  token: requestToken,
+  context: {
+    ipAddress: requestIp,
+  },
 });
-```
 
-> PostgreSQL schemas are auto-validated/created if missing. Custom table names supported via `userTableName`.
-
----
-
-## Core Types
-
-### `IAuthManager`
-
-```ts
-export interface IAuthManager {
-  signup(email: string, username: string, password: string): Promise<AuthResult>;
-  login(email: string, password: string): Promise<AuthResult>;
-  logout(sessionToken: string): Promise<AuthResult>;
-  me(sessionToken: string): Promise<AuthResult>;
-  requestMagicLink?(email: string): Promise<AuthResult>;
-  consumeMagicLink?(token: string): Promise<AuthResult>;
+if (result.success) {
+  const session = result.data;
+  console.log(`User ID: ${session.userId}`);
 }
 ```
 
-### `AuthResult`
+### Rotating a Session
 
-```ts
-export interface AuthResult<T = any> {
-  success: boolean;
-  data: T | null;
-  httpCode: number;
-  message: string;
+```typescript
+const result = await sessionService.rotateSession({
+  token: oldToken,
+  context: {
+    ipAddress: requestIp,
+  },
+});
+
+if (result.success) {
+  const { newToken, record } = result.data;
+  // Update client with the new token
 }
 ```
 
-> All APIs return `AuthResult` — sensitive information (passwords, token hashes) is never exposed.
+## Security Best Practices
 
----
+1. Use HTTPS: Always serve your application over TLS.
+2. Secure Cookies: Use `HttpOnly`, `Secure`, and `SameSite` flags for cookies.
+3. IP Binding: Enable `hard` IP binding if your application requires strict security.
+4. Token Rotation: Rotate tokens frequently, especially after privilege changes.
+5. Absolute Timeout: Always set an absolute timeout to limit the maximum life of a session.
 
-## Usage Examples
+## Testing
 
-### Credentials Signup & Login
+Run the unit tests using:
 
-```ts
-// Signup
-const signupResult = await auth.signup("user@test.com", "username", "StrongPassword123!");
-res.status(signupResult.httpCode).json(signupResult);
-
-// Login
-const loginResult = await auth.login("user@test.com", "StrongPassword123!");
-if (loginResult.success) {
-  res.cookie("AUTH_SESSION", loginResult.data.sessionToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: loginResult.data.session.expiresAt.getTime() - Date.now(),
-  });
-}
-res.status(loginResult.httpCode).json(loginResult);
-
-// Validate / Rotate session
-const meResult = await auth.me(loginResult.data.sessionToken);
-console.log(meResult.data.sessionToken); // ⚡ New rotated token
+```bash
+npm test
 ```
 
-### Magic Link Flow
+## License
 
-```ts
-// Request Magic Link
-const magicResult = await auth.requestMagicLink!("user@test.com");
-res.status(magicResult.httpCode).json(magicResult);
-
-// Consume Magic Link
-const consumeResult = await auth.consumeMagicLink!(token);
-if (consumeResult.success) {
-  res.cookie("AUTH_SESSION", consumeResult.data.sessionToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-  });
-}
-res.json(consumeResult);
-```
-
-> ⚠️ Tokens (`sessionToken`) are safe for API clients; passwords and token hashes are never returned.
-
----
-
-## NestJS Integration – Protected Routes
-
-You can now protect your NestJS endpoints using the built-in `MvpAuthGuard`:
-
-```ts
-import { Controller, Get, UseGuards, Req, Res } from '@nestjs/common';
-import { MvpAuthGuard } from '@restingowlorg/mvp-auth';
-
-@Controller('auth')
-export class AuthController {
-  @UseGuards(MvpAuthGuard)
-  @Get('protected')
-  async protectedResource(@Req() req, @Res() res) {
-    return res.status(200).json({
-      success: true,
-      message: 'You have accessed a protected resource',
-      userId: req.user.id,
-    });
-  }
-}
-```
-
-**Behavior:**
-
-* If the session is invalid, expired, or missing, the guard returns a structured JSON response:
-
-```json
-{
-  "statusCode": 401,
-  "message": "Session expired due to inactivity",
-  "error": "Unauthorized"
-}
-```
-
-* Token rotation happens automatically on every valid request.
-* The latest `sessionToken` is sent via HTTP-only cookie for the client to continue using.
-
----
-
-## Framework-specific Utilities
-
-* `MvpAuthGuard` for NestJS (protect endpoints)
-* For Express/Fastify, create a middleware using `session.validate(token)`
-* Transparent session rotation and idle timeout handling works across all integrations
-
----
-
-## Security Notes
-
-* Passwords hashed with `bcrypt`
-* Sessions use **secure, revocable token-based approach**
-* **Token rotation** on every validation prevents token reuse
-* HTTP-only cookies recommended
-* **Idle timeout** revokes inactive sessions
-* **Max concurrent sessions** prevents account abuse
-* Password checks follow OWASP guidelines
-
----
-
-## Database Schema Reference (PostgreSQL)
-
-| Table         | Columns                                                       |
-| ------------- | ------------------------------------------------------------- |
-| `users`       | id, email, username, password                                 |
-| `sessions`    | id, user_id, token_hash, expires_at, last_used_at, revoked_at |
-| `magic_links` | id, user_id, token, created_at, used_at                       |
-
-> Library auto-creates or migrates schemas as needed.
-
----
-
-## Best Practices
-
-* Always use **HTTPS + Secure cookies**
-* Keep **sessions short-lived**
-* Validate external user tables before use
-* Use **strong passwords** with optional breach checks
-* Revoke tokens on logout, inactivity, or suspicious activity
-* Monitor logs for **session rotations** 🔄 and revocations 🗑️
-
----
-
+MIT

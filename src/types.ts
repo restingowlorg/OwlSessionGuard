@@ -1,41 +1,209 @@
+import { SessionStoreAdapter } from "./storage/contracts";
 
-export type SessionOptions = {
-  dbType: "mongo" | "postgres" | "mysql" | string;
+/**
+ * Session status enum representing the current lifecycle stage of a session.
+ */
+export enum SessionStatus {
+  ACTIVE = "active",
+  ROTATED = "rotated",
+  REVOKED = "revoked",
+  EXPIRED = "expired",
+}
 
-  // DB connection strings
-  mongoUri?: string;
-  postgresUrl?: string;
+/**
+ * Typed reason codes for session state changes, used for auditing and debugging.
+ */
+export enum SessionReasonCode {
+  // Normal operations
+  MANUAL_LOGOUT = "manual_logout",
+  ROTATION = "rotation",
 
-  // Optional custom table/collection names (for Postgres)
-  postgresSessionTable?: string;
+  // Expiration
+  IDLE_TIMEOUT = "idle_timeout",
+  ABSOLUTE_TIMEOUT = "absolute_timeout",
+  ROTATION_GRACE_EXPIRED = "rotation_grace_expired",
 
-  // Session configuration
-  sessionTtlSeconds?: number; // Absolute TTL
-  idleTtlSeconds?: number; // Sliding idle TTL
-  maxSessionsPerUser?: number; // Limit concurrent sessions
+  // Security violations
+  IP_MISMATCH = "ip_mismatch",
+  DEVICE_MISMATCH = "device_mismatch",
+  FINGERPRINT_MISMATCH = "fingerprint_mismatch",
+  CSRF_VIOLATION = "csrf_violation",
+  SECURITY_BREACH = "security_breach",
 
-  // Cookie options if exposing sessions via cookies
-  cookieName?: string;
-  cookieOptions?: {
-    httpOnly?: boolean;
-    secure?: boolean;
-    sameSite?: "lax" | "strict" | "none";
+  // Administrative
+  ADMIN_REVOKED = "admin_revoked",
+  USER_ALL_SESSIONS_REVOKED = "user_all_sessions_revoked",
+}
+
+/**
+ * Contextual metadata for a session, used for binding and fingerprinting.
+ */
+export interface SessionMetadata {
+  ipAddress: string;
+  userAgent?: string;
+  deviceFingerprint?: string;
+  deviceContext?: Record<string, string | number | boolean>;
+}
+
+/**
+ * The full session record as stored in the session store.
+ */
+export interface SessionRecord {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  status: SessionStatus;
+
+  // Authorization
+  roles: string[];
+  scopes: string[];
+
+  // Lifespan
+  createdAt: Date;
+  lastUsedAt: Date;
+  expiresAt: Date;
+  idleExpiresAt: Date;
+
+  // Security Binding
+  metadata: SessionMetadata;
+
+  // Revocation
+  revokedAt?: Date;
+  revocationReason?: SessionReasonCode;
+
+  // Hierarchy/Tracing
+  parentSessionId?: string; // Used for rotation tracking
+}
+
+/**
+ * Standard response wrapper for session operations.
+ */
+export type SessionOpResult<T> =
+  | {
+      success: true;
+      data: T;
+      httpCode: number;
+      error?: never;
+    }
+  | {
+      success: false;
+      data?: never;
+      error: {
+        code: string;
+        message: string;
+        reason?: SessionReasonCode;
+      };
+      httpCode: number;
+    };
+
+/**
+ * Explicit success result for operations that don't return data.
+ */
+export interface SessionSuccess {
+  acknowledged: boolean;
+  timestamp: Date;
+}
+
+/**
+ * Service operation parameters
+ */
+export interface CreateSessionParams {
+  userId: string;
+  roles?: string[];
+  scopes?: string[];
+  metadata: SessionMetadata;
+}
+
+export interface ValidateSessionParams {
+  token: string;
+  context: SessionMetadata;
+}
+
+export interface RotateSessionParams {
+  token: string;
+  context: SessionMetadata;
+  reason?: SessionReasonCode;
+}
+
+export interface RevokeSessionParams {
+  token?: string;
+  sessionId?: string;
+  reason: SessionReasonCode;
+}
+
+/**
+ * Configuration for the Session Management Library
+ */
+export interface SessionLibraryConfig {
+  env: "development" | "test" | "production";
+
+  transport: {
+    mode: "cookie" | "header" | "hybrid";
+    cookie?: {
+      name: string;
+      httpOnly: boolean;
+      secure: boolean;
+      sameSite: "lax" | "strict" | "none";
+      path?: string;
+      domain?: string;
+      maxAgeSeconds?: number;
+    };
+    header?: {
+      name: string;
+      scheme?: string;
+    };
   };
-};
 
-export interface SessionDB {
-  sessionRepo: any;
+  expiration: {
+    idleTimeoutSeconds: number;
+    absoluteTimeoutSeconds: number;
+    rolling: boolean;
+  };
+
+  rotation: {
+    rotateOnLogin: boolean;
+    rotateOnPrivilegeChange: boolean;
+    gracePeriodSeconds: number;
+  };
+
+  security: {
+    enforceTlsInProduction: boolean;
+    ipBinding: "off" | "soft" | "hard";
+    fingerprinting: "off" | "soft" | "hard";
+    csrf: {
+      enabled: boolean;
+      mode: "double-submit" | "external";
+    };
+  };
+
+  limits: {
+    maxSessionsPerUser: number;
+    maxSessionsPerRole?: Record<string, number>;
+  };
+
+  store: {
+    provider: "memory" | "redis" | "mongo" | "postgres" | "custom";
+    redis?: {
+      url: string;
+      keyPrefix?: string;
+      ttlBufferSeconds?: number;
+    };
+    mongo?: {
+      uri: string;
+      collectionName?: string;
+    };
+    postgres?: {
+      url: string;
+      tableName?: string;
+    };
+    custom?: {
+      adapter: SessionStoreAdapter;
+    };
+  };
+
+  observability: {
+    debug: boolean;
+    emitEvents: boolean;
+    metrics: boolean;
+  };
 }
-
-export interface SessionResult<T = any> {
-  success: boolean;
-  data?: T;
-  httpCode: number;
-  message: string;
-}
-
-export type InitPostgresOptions = {
-  userTableName?: string;
-};
-
-export type AuthLogLevel = "info" | "warn" | "error";
