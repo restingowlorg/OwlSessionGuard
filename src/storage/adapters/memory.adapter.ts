@@ -8,7 +8,13 @@ import { SessionRecord, SessionStatus } from "../../types";
 export class MemoryStoreAdapter implements SessionStoreAdapter {
   private sessions = new Map<string, SessionRecord>();
 
-  async create(record: SessionRecord): Promise<void> {
+  async create(record: SessionRecord, maxSessions?: number): Promise<void> {
+    if (maxSessions && maxSessions > 0) {
+      const activeCount = await this.countActiveForUser(record.userId);
+      if (activeCount >= maxSessions) {
+        throw new Error("SESSION_LIMIT_REACHED");
+      }
+    }
     this.sessions.set(record.id, { ...record });
   }
 

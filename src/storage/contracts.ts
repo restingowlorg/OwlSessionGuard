@@ -6,8 +6,10 @@ import { SessionRecord } from "../types";
 export interface SessionStoreAdapter {
   /**
    * Persist a new session record.
+   * @param record The session to create
+   * @param maxSessions Optional limit to enforce atomically during creation
    */
-  create(record: SessionRecord): Promise<void>;
+  create(record: SessionRecord, maxSessions?: number): Promise<void>;
 
   /**
    * Retrieve a session by its unique ID.
