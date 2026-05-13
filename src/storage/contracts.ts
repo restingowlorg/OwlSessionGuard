@@ -12,6 +12,20 @@ export interface SessionStoreAdapter {
   create(record: SessionRecord, maxSessions?: number): Promise<void>;
 
   /**
+   * Atomic session rotation (1-to-1 replacement).
+   * @param oldId The ID of the session being replaced
+   * @param newRecord The new session record to create
+   * @param oldUpdates Updates to apply to the old session (e.g. status = ROTATED)
+   * @param maxSessions Optional limit to enforce
+   */
+  rotate(
+    oldId: string,
+    newRecord: SessionRecord,
+    oldUpdates: Partial<SessionRecord>,
+    maxSessions?: number,
+  ): Promise<void>;
+
+  /**
    * Retrieve a session by its unique ID.
    */
   findById(id: string): Promise<SessionRecord | null>;
@@ -23,8 +37,15 @@ export interface SessionStoreAdapter {
 
   /**
    * Update specific fields of an existing session.
+   * @param id The session ID
+   * @param updates The fields to update
+   * @param maxSessions Optional limit to enforce if the session becomes active
    */
-  update(id: string, updates: Partial<SessionRecord>): Promise<void>;
+  update(
+    id: string,
+    updates: Partial<SessionRecord>,
+    maxSessions?: number,
+  ): Promise<void>;
 
   /**
    * Permanently remove a session record.

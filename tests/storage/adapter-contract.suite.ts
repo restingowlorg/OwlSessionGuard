@@ -111,5 +111,20 @@ export function runAdapterContractTests(
       const count = await adapter.countActiveForUser(userId);
       expect(count).toBe(1);
     });
+
+    test("should find session by NEW token hash after rotation", async () => {
+      const record = createMockRecord();
+      await adapter.create(record);
+
+      const newTokenHash = uuidv4();
+      await adapter.update(record.id, { tokenHash: newTokenHash });
+
+      const foundOld = await adapter.findByTokenHash(record.tokenHash);
+      const foundNew = await adapter.findByTokenHash(newTokenHash);
+
+      expect(foundOld).toBeNull(); // Old index should be unlinked
+      expect(foundNew).not.toBeNull();
+      expect(foundNew?.id).toBe(record.id);
+    });
   });
 }

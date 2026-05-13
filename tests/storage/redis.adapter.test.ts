@@ -14,7 +14,7 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
 
   /**
    * Polyfill: ossecCreateSession
-   * Atomic creation with limit enforcement.
+   * Atomic creation with native time sync and limit enforcement.
    */
   // @ts-expect-error - Custom Lua polyfill
   redis.ossecCreateSession = async (
@@ -22,7 +22,6 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
     sessKey: string,
     tokenKey: string,
     maxSessions: number,
-    now: number,
     recordJson: string,
     id: string,
     tokenHash: string,
@@ -31,6 +30,9 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
     maxAbsTtl: number,
     status: string
   ) => {
+    // Mimic redis.call('TIME')
+    const now = Date.now();
+
     if (maxSessions > 0 && status === "active") {
       await redis.zremrangebyscore(userKey, "-inf", now);
       const count = await redis.zcount(userKey, now, "+inf");
@@ -40,6 +42,10 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
     }
 
     const pipeline = redis.pipeline();
+    // SET ... NX simulation
+    const exists = await redis.exists(sessKey);
+    if (exists) throw new Error("ERR_SESSION_ALREADY_EXISTS");
+
     pipeline.set(sessKey, recordJson, "EX", ttl);
     pipeline.set(tokenKey, id, "EX", ttl);
     if (status === "active") {
@@ -52,7 +58,7 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
 
   /**
    * Polyfill: ossecUpdateSession
-   * Atomic update with rotation sync.
+   * Atomic update with native time sync and rotation guard.
    */
   // @ts-expect-error - Custom Lua polyfill
   redis.ossecUpdateSession = async (
@@ -62,6 +68,7 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
     ttl: number,
     score: number,
     tokenPrefix: string,
+    maxSessions: number,
     maxAbsTtl: number
   ) => {
     const data = await redis.get(sessKey);
@@ -69,9 +76,26 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
 
     const record = JSON.parse(data);
     const oldTokenHash = record.tokenHash;
+    const oldStatus = record.status;
     const updates = JSON.parse(updatesJson);
     const updatedRecord = { ...record, ...updates };
     const newTokenHash = updatedRecord.tokenHash;
+    const status = updatedRecord.status;
+
+    // Mimic redis.call('TIME')
+    const now = Date.now();
+
+    if (status === "active") {
+      await redis.zremrangebyscore(userKey, "-inf", now);
+      
+      // Enforce limit if becoming active
+      if (oldStatus !== "active" && maxSessions > 0) {
+        const count = await redis.zcount(userKey, now, "+inf");
+        if (count >= maxSessions) {
+          throw new Error("ERR_SESSION_LIMIT_REACHED");
+        }
+      }
+    }
 
     const pipeline = redis.pipeline();
     pipeline.set(sessKey, JSON.stringify(updatedRecord), "EX", ttl);
@@ -81,7 +105,7 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
     }
     pipeline.set(tokenPrefix + newTokenHash, updatedRecord.id, "EX", ttl);
 
-    if (updatedRecord.status === "active") {
+    if (status === "active") {
       if (oldTokenHash !== newTokenHash) {
         pipeline.zrem(userKey, `${updatedRecord.id}:${oldTokenHash}`);
       }
@@ -91,6 +115,55 @@ runAdapterContractTests("RedisStoreAdapter", async () => {
       pipeline.zrem(userKey, `${updatedRecord.id}:${oldTokenHash}`);
       pipeline.zrem(userKey, `${updatedRecord.id}:${newTokenHash}`);
     }
+
+    await pipeline.exec();
+    return 1;
+  };
+
+  /**
+   * Polyfill: ossecRotateSession
+   * Atomic session rotation (1-to-1 replacement).
+   */
+  // @ts-expect-error - Custom Lua polyfill
+  redis.ossecRotateSession = async (
+    oldSessKey: string,
+    oldTokenKey: string,
+    userKey: string,
+    newSessKey: string,
+    newTokenKey: string,
+    maxSessions: number,
+    oldUpdateJson: string,
+    newRecordJson: string,
+    newId: string,
+    newTokenHash: string,
+    ttl: number,
+    score: number,
+    maxAbsTtl: number
+  ) => {
+    const data = await redis.get(oldSessKey);
+    if (!data) throw new Error("ERR_SESSION_NOT_FOUND");
+    const record = JSON.parse(data);
+    if (record.status !== "active") throw new Error("ERR_SESSION_NOT_ACTIVE");
+
+    const now = Date.now();
+    await redis.zremrangebyscore(userKey, "-inf", now);
+    
+    if (maxSessions > 0) {
+      const count = await redis.zcount(userKey, now, "+inf");
+      if (count >= maxSessions) throw new Error("ERR_SESSION_LIMIT_REACHED");
+    }
+
+    const pipeline = redis.pipeline();
+    // Update OLD
+    pipeline.set(oldSessKey, oldUpdateJson, "EX", ttl);
+    pipeline.unlink(oldTokenKey);
+    pipeline.zrem(userKey, `${record.id}:${record.tokenHash}`);
+
+    // Create NEW
+    pipeline.set(newSessKey, newRecordJson, "EX", ttl);
+    pipeline.set(newTokenKey, newId, "EX", ttl);
+    pipeline.zadd(userKey, score, `${newId}:${newTokenHash}`);
+    pipeline.expire(userKey, maxAbsTtl);
 
     await pipeline.exec();
     return 1;

@@ -18,6 +18,29 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
     this.sessions.set(record.id, { ...record });
   }
 
+  async rotate(
+    oldId: string,
+    newRecord: SessionRecord,
+    oldUpdates: Partial<SessionRecord>,
+    maxSessions?: number,
+  ): Promise<void> {
+    const oldRecord = this.sessions.get(oldId);
+    if (!oldRecord) throw new Error("SESSION_NOT_FOUND");
+    if (oldRecord.status !== SessionStatus.ACTIVE)
+      throw new Error("SESSION_NOT_ACTIVE");
+
+    // Atomic limit check for the NEW session
+    if (maxSessions && maxSessions > 0) {
+      const activeCount = await this.countActiveForUser(oldRecord.userId);
+      if (activeCount >= maxSessions) {
+        throw new Error("SESSION_LIMIT_REACHED");
+      }
+    }
+
+    this.sessions.set(oldId, { ...oldRecord, ...oldUpdates });
+    this.sessions.set(newRecord.id, { ...newRecord });
+  }
+
   async findById(id: string): Promise<SessionRecord | null> {
     const session = this.sessions.get(id);
     return session ? { ...session } : null;
@@ -32,11 +55,28 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
     return null;
   }
 
-  async update(id: string, updates: Partial<SessionRecord>): Promise<void> {
-    const session = this.sessions.get(id);
-    if (session) {
-      this.sessions.set(id, { ...session, ...updates });
+  async update(
+    id: string,
+    updates: Partial<SessionRecord>,
+    maxSessions?: number,
+  ): Promise<void> {
+    const record = this.sessions.get(id);
+    if (!record) return;
+
+    const newRecord = { ...record, ...updates };
+
+    // Enforce limit if session is becoming active
+    if (
+      newRecord.status === SessionStatus.ACTIVE &&
+      record.status !== SessionStatus.ACTIVE
+    ) {
+      const activeCount = await this.countActiveForUser(record.userId);
+      if (maxSessions && maxSessions > 0 && activeCount >= maxSessions) {
+        throw new Error("SESSION_LIMIT_REACHED");
+      }
     }
+
+    this.sessions.set(id, newRecord);
   }
 
   async delete(id: string): Promise<void> {

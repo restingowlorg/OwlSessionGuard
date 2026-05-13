@@ -35,14 +35,8 @@ export class SessionService implements ISessionService {
     }>
   > {
     try {
-      const activeCount = await this.store.countActiveForUser(params.userId);
-      if (activeCount >= this.config.limits.maxSessionsPerUser) {
-        return this.fail(
-          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
-          403,
-          SessionReasonCode.SECURITY_BREACH,
-        );
-      }
+      // We delegate the limit check to the atomic storage layer to prevent race conditions
+      const maxSessions = this.config.limits.maxSessionsPerUser;
 
       const { token, tokenHash } = this.generateSecureToken();
 
@@ -68,14 +62,21 @@ export class SessionService implements ISessionService {
         metadata: params.metadata,
       };
 
-      await this.store.create(record);
+      await this.store.create(record, maxSessions);
 
       return {
         success: true,
         data: { token, record },
         httpCode: 201,
       };
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
+        return this.fail(
+          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          403,
+          SessionReasonCode.SECURITY_BREACH,
+        );
+      }
       return this.handleError("Failed to create session", error);
     }
   }
@@ -168,7 +169,13 @@ export class SessionService implements ISessionService {
       const oldTokenHash = fastHash(params.token);
       const record = await this.store.findByTokenHash(oldTokenHash);
 
-      if (!record || !SessionStateMachine.isUsable(record.status)) {
+      if (
+        !record ||
+        !SessionStateMachine.isValidTransition(
+          record.status,
+          SessionStatus.ROTATED,
+        )
+      ) {
         return this.fail("Invalid or unusable session for rotation", 401);
       }
 
@@ -177,13 +184,6 @@ export class SessionService implements ISessionService {
 
       const now = new Date();
 
-      // Update old session status to ROTATED
-      await this.store.update(record.id, {
-        status: SessionStatus.ROTATED,
-        revocationReason: params.reason || SessionReasonCode.ROTATION,
-      });
-
-      // Create new session linked to the old one
       const newRecord: SessionRecord = {
         ...record,
         id: uuidv4(),
@@ -194,14 +194,30 @@ export class SessionService implements ISessionService {
         parentSessionId: record.id,
       };
 
-      await this.store.create(newRecord);
+      // Atomic rotation (1-to-1 replacement) via storage layer
+      await this.store.rotate(
+        record.id,
+        newRecord,
+        {
+          status: SessionStatus.ROTATED,
+          revocationReason: params.reason || SessionReasonCode.ROTATION,
+        },
+        this.config.limits.maxSessionsPerUser,
+      );
 
       return {
         success: true,
         data: { newToken, record: newRecord },
         httpCode: 200,
       };
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
+        return this.fail(
+          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          403,
+          SessionReasonCode.SECURITY_BREACH,
+        );
+      }
       return this.handleError("Rotation error", error);
     }
   }
@@ -223,8 +239,13 @@ export class SessionService implements ISessionService {
 
       if (!record) return this.fail("Session not found", 404);
 
-      // Enforce valid transition to REVOKED
-      if (record.status === SessionStatus.REVOKED) {
+      // Check if the session is already in a terminal state
+      if (
+        !SessionStateMachine.isValidTransition(
+          record.status,
+          SessionStatus.REVOKED,
+        )
+      ) {
         return {
           success: true,
           data: { acknowledged: true, timestamp: new Date() },
