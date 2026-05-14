@@ -83,6 +83,7 @@ export type SessionOpResult<T> =
       success: true;
       data: T;
       httpCode: number;
+      newToken?: string;
       error?: never;
     }
   | {
@@ -151,6 +152,7 @@ export interface SessionLibraryConfig {
     header?: {
       name: string;
       scheme?: string;
+      responseHeader?: string;
     };
   };
 
