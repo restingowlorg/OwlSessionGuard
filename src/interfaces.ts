@@ -55,3 +55,10 @@ export interface ISessionService {
     reason: SessionReasonCode,
   ): Promise<SessionOpResult<SessionSuccess>>;
 }
+
+export interface RedisStoreOptions {
+  keyPrefix?: string;
+  ttlBufferSeconds?: number;
+  batchSize?: number;
+  maxAbsoluteTimeoutSeconds?: number;
+}
