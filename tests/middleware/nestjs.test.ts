@@ -66,21 +66,22 @@ describe("NestJS Binding", () => {
 
   it("should skip validation if session is already memoized (Symbol protection)", async () => {
     const guard = new SessionGuard(mockService, config, mockReflector);
-    const req = mockContext.switchToHttp!().getRequest<SessionRequest>();
+    
+    // 1. First call: Should perform validation
+    mockService.validateSession.mockResolvedValueOnce({ 
+      success: true, 
+      data: createMockSession(), 
+      httpCode: 200 
+    });
+    
+    await guard.canActivate(mockContext as ExecutionContext);
+    expect(mockService.validateSession).toHaveBeenCalledTimes(1);
 
-    const session = createMockSession();
-    const OSSEC_MARKER =
-      Object.getOwnPropertySymbols(session).find(
-        (s) => s.description === "ossec:session:trusted",
-      ) ?? Symbol.for("ossec:session:trusted");
-
-    (session as unknown as Record<symbol, boolean>)[OSSEC_MARKER] = true;
-    req.session = session;
-
+    // 2. Second call: Should skip validation (memoized)
     const result = await guard.canActivate(mockContext as ExecutionContext);
 
     expect(result).toBe(true);
-    expect(mockService.validateSession).not.toHaveBeenCalled();
+    expect(mockService.validateSession).toHaveBeenCalledTimes(1); // Still 1
   });
 
   it("should enforce roles using Reflector", async () => {

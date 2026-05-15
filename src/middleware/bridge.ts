@@ -2,7 +2,7 @@ import { SessionRecord, SessionLibraryConfig } from "../types";
 import { ISessionService } from "../interfaces";
 
 /** Internal symbol to prevent session spoofing via other middlewares. */
-const OSSEC_SESSION_MARKER = Symbol.for("ossec:session:trusted");
+const OSSEC_SESSION_MARKER = Symbol("ossec:session:trusted");
 
 export interface CookieOptions {
   httpOnly: boolean;
@@ -39,6 +39,8 @@ export class BridgeProcessor {
   private readonly csrfConfig: {
     enabled: boolean;
     mode: "double-submit" | "external";
+    cookieName: string;
+    headerName: string;
   };
 
   constructor(config: SessionLibraryConfig) {
@@ -51,7 +53,11 @@ export class BridgeProcessor {
       : undefined;
     this.responseHeaderName =
       transport.header?.responseHeader || "X-Session-Token";
-    this.csrfConfig = security.csrf;
+    this.csrfConfig = {
+      ...security.csrf,
+      cookieName: security.csrf.cookieName || "x-csrf-token",
+      headerName: (security.csrf.headerName || "x-csrf-token").toLowerCase(),
+    };
 
     const c = transport.cookie;
     this.cookieOptions = {
@@ -99,8 +105,8 @@ export class BridgeProcessor {
         m === "options";
 
       if (!isSafe) {
-        const csrfCookie = context.getCookie("x-csrf-token");
-        const csrfHeader = context.getHeader("x-csrf-token");
+        const csrfCookie = context.getCookie(this.csrfConfig.cookieName);
+        const csrfHeader = context.getHeader(this.csrfConfig.headerName);
         if (!csrfCookie || csrfCookie !== csrfHeader) {
           return false;
         }

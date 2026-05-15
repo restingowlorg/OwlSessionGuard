@@ -179,4 +179,42 @@ describe("BridgeProcessor", () => {
 
     expect(validateFn).toHaveBeenCalledWith("bearer_token", expect.any(Object));
   });
+
+  it("should support custom CSRF cookie and header names", async () => {
+    const customConfig: SessionLibraryConfig = {
+      ...defaultConfig,
+      security: {
+        ...defaultConfig.security,
+        csrf: {
+          enabled: true,
+          mode: "double-submit",
+          cookieName: "CUSTOM_CSRF_COOKIE",
+          headerName: "X-CUSTOM-CSRF",
+        },
+      },
+    };
+    processor = new BridgeProcessor(customConfig);
+    mockContext.getMethod.mockReturnValue("POST");
+    mockContext.getCookie.mockReturnValue("token");
+    mockContext.getHeader.mockReturnValue("token"); // Correct session token
+    
+    // CSRF Check
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "CUSTOM_CSRF_COOKIE") return "csrf_secret";
+      if (name === "test_sid") return "session_token";
+      return undefined;
+    });
+    mockContext.getHeader.mockImplementation((name) => {
+      if (name === "x-custom-csrf") return "csrf_secret"; // Bridge lowercases it
+      if (name === "authorization") return "Bearer session_token";
+      return undefined;
+    });
+
+    const validateFn = jest.fn().mockResolvedValue({ success: true, data: createMockSession(), httpCode: 200 });
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(true);
+    expect(mockContext.getCookie).toHaveBeenCalledWith("CUSTOM_CSRF_COOKIE");
+    expect(mockContext.getHeader).toHaveBeenCalledWith("x-custom-csrf");
+  });
 });

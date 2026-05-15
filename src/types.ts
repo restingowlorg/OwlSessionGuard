@@ -175,6 +175,8 @@ export interface SessionLibraryConfig {
     csrf: {
       enabled: boolean;
       mode: "double-submit" | "external";
+      cookieName?: string;
+      headerName?: string;
     };
   };
 

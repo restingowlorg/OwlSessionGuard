@@ -129,7 +129,11 @@ export class SessionGuard implements CanActivate {
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    if (context.getType() !== "http") return true;
+    if (context.getType() !== "http") {
+      throw new UnauthorizedException(
+        "SessionGuard only supports HTTP context",
+      );
+    }
 
     const http = context.switchToHttp();
     const req = http.getRequest<SessionRequest>();
