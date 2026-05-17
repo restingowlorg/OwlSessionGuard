@@ -48,6 +48,7 @@ class NestSessionContext implements SessionWebContext {
   constructor(
     private readonly req: SessionRequest,
     private readonly res: SessionResponse,
+    private readonly shouldSignSessionCookie: boolean,
   ) {}
 
   getMethod(): string {
@@ -75,6 +76,7 @@ class NestSessionContext implements SessionWebContext {
       path: opts.path,
       domain: opts.domain,
       maxAge: opts.maxAgeSeconds ? opts.maxAgeSeconds * 1000 : undefined,
+      signed: this.shouldSignSessionCookie,
     });
   }
 
@@ -121,7 +123,7 @@ export class SessionGuard implements CanActivate {
 
   constructor(
     service: ISessionService,
-    config: SessionLibraryConfig,
+    private readonly config: SessionLibraryConfig,
     private readonly reflector: Reflector,
   ) {
     this.processor = new BridgeProcessor(config);
@@ -139,8 +141,11 @@ export class SessionGuard implements CanActivate {
     const req = http.getRequest<SessionRequest>();
     const res = http.getResponse<SessionResponse>();
 
+    const shouldSignSessionCookie =
+      this.config.transport.cookie?.signed ?? false;
+
     const isValid = await this.processor.handle(
-      new NestSessionContext(req, res),
+      new NestSessionContext(req, res, shouldSignSessionCookie),
       this.validateFn,
     );
 
@@ -152,15 +157,23 @@ export class SessionGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (roles?.length && !roles.some((r) => session.roles.includes(r)))
+    if (
+      roles?.length &&
+      !roles.some((role: string) => session.roles.includes(role))
+    ) {
       throw new ForbiddenException("Insufficient roles");
+    }
 
     const scopes = this.reflector.getAllAndOverride<string[]>(SCOPES_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-    if (scopes?.length && !scopes.every((s) => session.scopes.includes(s)))
+    if (
+      scopes?.length &&
+      !scopes.every((scope: string) => session.scopes.includes(scope))
+    ) {
       throw new ForbiddenException("Insufficient scopes");
+    }
 
     return true;
   }
@@ -171,7 +184,10 @@ export class SessionInterceptor implements NestInterceptor {
   private readonly processor: BridgeProcessor;
   private readonly validateFn: ReturnType<typeof buildValidateFn>;
 
-  constructor(service: ISessionService, config: SessionLibraryConfig) {
+  constructor(
+    private readonly service: ISessionService,
+    private readonly config: SessionLibraryConfig,
+  ) {
     this.processor = new BridgeProcessor(config);
     this.validateFn = buildValidateFn(service);
   }
@@ -182,10 +198,13 @@ export class SessionInterceptor implements NestInterceptor {
   ): Promise<Observable<unknown>> {
     if (context.getType() === "http") {
       const http = context.switchToHttp();
+      const shouldSignSessionCookie =
+        this.config.transport.cookie?.signed ?? false;
       await this.processor.handle(
         new NestSessionContext(
           http.getRequest<SessionRequest>(),
           http.getResponse<SessionResponse>(),
+          shouldSignSessionCookie,
         ),
         this.validateFn,
       );

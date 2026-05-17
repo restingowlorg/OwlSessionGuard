@@ -22,15 +22,13 @@ declare global {
  * Shared methods on prototype eliminate closure creation overhead per request.
  */
 class ExpressSessionContext implements SessionWebContext {
-  private readonly isSigned: boolean;
   private _clientInfo?: { ipAddress: string; userAgent?: string };
 
   constructor(
     private readonly req: Request,
     private readonly res: Response,
-  ) {
-    this.isSigned = Object.keys(req.signedCookies || {}).length > 0;
-  }
+    private readonly shouldSignSessionCookie: boolean,
+  ) {}
 
   getMethod(): string {
     return this.req.method;
@@ -57,7 +55,7 @@ class ExpressSessionContext implements SessionWebContext {
       path: opts.path,
       domain: opts.domain,
       maxAge: opts.maxAgeSeconds ? opts.maxAgeSeconds * 1000 : undefined,
-      signed: this.isSigned,
+      signed: this.shouldSignSessionCookie,
     });
   }
 
@@ -103,7 +101,11 @@ export const createExpressMiddleware = (
     next: NextFunction,
   ): Promise<void> => {
     try {
-      await processor.handle(new ExpressSessionContext(req, res), validateFn);
+      const shouldSignSessionCookie = config.transport.cookie?.signed ?? false;
+      await processor.handle(
+        new ExpressSessionContext(req, res, shouldSignSessionCookie),
+        validateFn,
+      );
       next();
     } catch (error) {
       next(error);

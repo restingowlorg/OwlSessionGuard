@@ -144,6 +144,7 @@ export interface SessionLibraryConfig {
       name: string;
       httpOnly: boolean;
       secure: boolean;
+      signed?: boolean;
       sameSite: "lax" | "strict" | "none";
       path?: string;
       domain?: string;
