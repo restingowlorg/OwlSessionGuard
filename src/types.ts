@@ -83,6 +83,7 @@ export type SessionOpResult<T> =
       success: true;
       data: T;
       httpCode: number;
+      newToken?: string;
       error?: never;
     }
   | {
@@ -143,6 +144,7 @@ export interface SessionLibraryConfig {
       name: string;
       httpOnly: boolean;
       secure: boolean;
+      signed?: boolean;
       sameSite: "lax" | "strict" | "none";
       path?: string;
       domain?: string;
@@ -151,6 +153,7 @@ export interface SessionLibraryConfig {
     header?: {
       name: string;
       scheme?: string;
+      responseHeader?: string;
     };
   };
 
@@ -173,6 +176,8 @@ export interface SessionLibraryConfig {
     csrf: {
       enabled: boolean;
       mode: "double-submit" | "external";
+      cookieName?: string;
+      headerName?: string;
     };
   };
 
