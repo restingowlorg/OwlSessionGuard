@@ -7,6 +7,7 @@ import { SessionRecord, SessionStatus } from "../../types";
  */
 export class MemoryStoreAdapter implements SessionStoreAdapter {
   private sessions = new Map<string, SessionRecord>();
+  private locks = new Map<string, Date>();
 
   async create(record: SessionRecord, maxSessions?: number): Promise<void> {
     if (maxSessions && maxSessions > 0) {
@@ -32,7 +33,8 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
     // Atomic limit check for the NEW session
     if (maxSessions && maxSessions > 0) {
       const activeCount = await this.countActiveForUser(oldRecord.userId);
-      if (activeCount >= maxSessions) {
+      // Because this is a 1-to-1 replacement, we only fail if they are strictly OVER the limit.
+      if (activeCount > maxSessions) {
         throw new Error("SESSION_LIMIT_REACHED");
       }
     }
@@ -105,5 +107,31 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       }
     }
     return count;
+  }
+
+  async acquireLock(key: string, ttlMs: number): Promise<boolean> {
+    const now = new Date();
+    const existingLock = this.locks.get(key);
+    if (existingLock && existingLock > now) {
+      return false; // Lock already held
+    }
+    this.locks.set(key, new Date(now.getTime() + ttlMs));
+    return true;
+  }
+
+  async releaseLock(key: string): Promise<void> {
+    this.locks.delete(key);
+  }
+
+  async isLocked(key: string): Promise<boolean> {
+    const now = new Date();
+    const existingLock = this.locks.get(key);
+    if (existingLock && existingLock > now) {
+      return true;
+    }
+    if (existingLock) {
+      this.locks.delete(key); // Lazy cleanup of expired locks
+    }
+    return false;
   }
 }

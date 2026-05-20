@@ -119,7 +119,8 @@ describe("SessionService", () => {
         if (rotateResult.success) {
           expect(rotateResult.data.newToken).not.toBe(createResult.data.token);
           
-          // Old token should be unusable
+          // Old token should be unusable after grace period
+          await new Promise((resolve) => setTimeout(resolve, 55));
           const validateOld = await service.validateSession({
             token: createResult.data.token,
             context: { ipAddress: "127.0.0.1" },

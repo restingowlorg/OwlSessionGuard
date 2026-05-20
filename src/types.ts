@@ -73,6 +73,7 @@ export interface SessionRecord {
 
   // Hierarchy/Tracing
   parentSessionId?: string; // Used for rotation tracking
+  childSessionId?: string; // Pointer to descendant session generated during rotation
 }
 
 /**
@@ -117,12 +118,12 @@ export interface CreateSessionParams {
 
 export interface ValidateSessionParams {
   token: string;
-  context: SessionMetadata;
+  context: SessionMetadata & { method?: string };
 }
 
 export interface RotateSessionParams {
   token: string;
-  context: SessionMetadata;
+  context: SessionMetadata & { method?: string };
   reason?: SessionReasonCode;
 }
 
@@ -211,4 +212,25 @@ export interface SessionLibraryConfig {
     emitEvents: boolean;
     metrics: boolean;
   };
+}
+
+/**
+ * Security evaluation context containing current request metadata.
+ */
+export interface SecurityEvaluationContext {
+  ipAddress: string;
+  userAgent?: string;
+  deviceFingerprint?: string;
+  method: string; // HTTP method of the current request (used to enforce read-only grace checks)
+}
+
+/**
+ * Result of a security policy evaluation.
+ */
+export interface SecurityEvaluationResult {
+  isValid: boolean;
+  isWithinGracePeriod: boolean;
+  actionRequired?: "revoke" | "revoke_tree" | "none";
+  reason?: SessionReasonCode;
+  message?: string;
 }
