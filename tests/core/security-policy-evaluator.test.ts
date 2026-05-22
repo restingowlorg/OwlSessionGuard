@@ -405,6 +405,39 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         await store.releaseLock(lockKey);
       }
     });
+
+    it("should allow concurrent read-only GET requests on a rotated session within overlapping grace periods", async () => {
+      const createResult = await service.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!createResult.success) return;
+
+      const rotateResult = await service.rotateSession({
+        token: createResult.data.token,
+        context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!rotateResult.success) return;
+
+      // The old token is now ROTATED but within the 50ms grace period.
+      // Launch 5 concurrent read requests with the OLD token
+      const promises = Array.from({ length: 5 }).map(() =>
+        service.validateSession({
+          token: createResult.data.token,
+          context: { ipAddress: "127.0.0.1", userAgent: "Mozilla", method: "GET" },
+        }),
+      );
+
+      const results = await Promise.all(promises);
+
+      // All of them should succeed and return the old session record seamlessly due to overlapping grace
+      for (const result of results) {
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data.status).toBe(SessionStatus.ROTATED);
+        }
+      }
+    });
   });
 
   describe("Automatic Reuse Detection (ARD) Cascading Revocation", () => {
@@ -458,6 +491,62 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
       expect(finalB?.status).toBe(SessionStatus.REVOKED);
       expect(finalB?.revocationReason).toBe(SessionReasonCode.SECURITY_BREACH);
+    });
+
+    it("should trigger ARD tree revocation with deeply nested session hierarchies", async () => {
+      // Create Session A
+      const createA = await service.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!createA.success) return;
+
+      // Rotate A -> B
+      const rotateB = await service.rotateSession({
+        token: createA.data.token,
+        context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!rotateB.success) return;
+
+      // Rotate B -> C
+      const rotateC = await service.rotateSession({
+        token: rotateB.data.newToken,
+        context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!rotateC.success) return;
+
+      // Rotate C -> D
+      const rotateD = await service.rotateSession({
+        token: rotateC.data.newToken,
+        context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
+      });
+      if (!rotateD.success) return;
+
+      // Artificially age the revokedAt timestamp of A beyond 50ms limit (e.g. 1 second ago)
+      await store.update(createA.data.record.id, {
+        revokedAt: new Date(Date.now() - 1000),
+      });
+
+      // Attacker attempts to reuse old token A
+      const reuseResult = await service.validateSession({
+        token: createA.data.token,
+        context: { ipAddress: "127.0.0.1", userAgent: "Mozilla", method: "GET" },
+      });
+
+      expect(reuseResult.success).toBe(false);
+
+      // Verify all sessions in the hierarchy are recursively revoked
+      const finalA = await store.findById(createA.data.record.id);
+      const finalB = await store.findById(rotateB.data.record.id);
+      const finalC = await store.findById(rotateC.data.record.id);
+      const finalD = await store.findById(rotateD.data.record.id);
+
+      expect(finalA?.status).toBe(SessionStatus.REVOKED);
+      expect(finalB?.status).toBe(SessionStatus.REVOKED);
+      expect(finalC?.status).toBe(SessionStatus.REVOKED);
+      expect(finalD?.status).toBe(SessionStatus.REVOKED);
+      
+      expect(finalD?.revocationReason).toBe(SessionReasonCode.SECURITY_BREACH);
     });
   });
 });

@@ -41,6 +41,11 @@ export const DEFAULT_CONFIG: Partial<SessionLibraryConfig> = {
     maxSessionsPerUser: 5,
   },
 
+  concurrency: {
+    lockTimeoutMs: 50,
+    pollIntervalMs: 5,
+  },
+
   store: {
     provider: "memory",
   },

@@ -133,8 +133,8 @@ export class SessionService implements ISessionService {
         let isLocked = await this.store.isLocked(lockKey);
         if (isLocked) {
           const startTime = Date.now();
-          const capMs = 50; // 50ms queue limit
-          const retryIntervalMs = 5;
+          const capMs = this.config.concurrency?.lockTimeoutMs || 50;
+          const retryIntervalMs = this.config.concurrency?.pollIntervalMs || 5;
 
           while (isLocked && Date.now() - startTime < capMs) {
             await new Promise((resolve) =>
@@ -177,6 +177,7 @@ export class SessionService implements ISessionService {
       if (!evaluation.isValid) {
         const reason = evaluation.reason || SessionReasonCode.SECURITY_BREACH;
 
+        let affectedSessionIds: string[] | undefined;
         if (evaluation.actionRequired === "revoke") {
           await this.revokeSession({
             sessionId: record.id,
@@ -184,11 +185,17 @@ export class SessionService implements ISessionService {
           });
         } else if (evaluation.actionRequired === "revoke_tree") {
           // Automatic Reuse Detection (ARD): cascade revoke of the entire family tree
-          await this.revokeSessionTree(record.id, reason);
+          affectedSessionIds = await this.revokeSessionTree(record.id, reason);
         }
 
         // Emit breach alert event
-        this.emitSecurityRejection(record, reason, evaluation.message);
+        this.emitSecurityRejection({
+          record,
+          reason,
+          message: evaluation.message,
+          affectedSessionIds,
+          context: evaluationContext,
+        });
 
         return this.fail(
           evaluation.message || "Security violation",
@@ -199,11 +206,12 @@ export class SessionService implements ISessionService {
 
       // Soft context binding warnings
       if (evaluation.reason) {
-        this.emitSecurityRejection(
+        this.emitSecurityRejection({
           record,
-          evaluation.reason,
-          evaluation.message,
-        );
+          reason: evaluation.reason,
+          message: evaluation.message,
+          context: evaluationContext,
+        });
       }
 
       // Rolling expiration update
@@ -407,12 +415,13 @@ export class SessionService implements ISessionService {
     sessionId: string,
     reason: SessionReasonCode,
     visited: Set<string> = new Set(),
-  ): Promise<void> {
-    if (visited.has(sessionId)) return;
+    affectedIds: string[] = [],
+  ): Promise<string[]> {
+    if (visited.has(sessionId)) return affectedIds;
     visited.add(sessionId);
 
     const record = await this.store.findById(sessionId);
-    if (!record) return;
+    if (!record) return affectedIds;
 
     if (record.status !== SessionStatus.REVOKED) {
       await this.store.update(record.id, {
@@ -420,6 +429,8 @@ export class SessionService implements ISessionService {
         revokedAt: new Date(),
         revocationReason: reason,
       });
+
+      affectedIds.push(record.id);
 
       this.emitEvent("session.revoked", {
         sessionId: record.id,
@@ -430,8 +441,15 @@ export class SessionService implements ISessionService {
     }
 
     if (record.childSessionId) {
-      await this.revokeSessionTree(record.childSessionId, reason, visited);
+      await this.revokeSessionTree(
+        record.childSessionId,
+        reason,
+        visited,
+        affectedIds,
+      );
     }
+
+    return affectedIds;
   }
 
   private generateSecureToken(): { token: string; tokenHash: string } {
@@ -446,16 +464,23 @@ export class SessionService implements ISessionService {
     }
   }
 
-  private emitSecurityRejection(
-    record: SessionRecord,
-    reason: SessionReasonCode,
-    message?: string,
-  ): void {
+  private emitSecurityRejection(params: {
+    record: SessionRecord;
+    reason: SessionReasonCode;
+    message?: string;
+    affectedSessionIds?: string[];
+    context?: SecurityEvaluationContext;
+  }): void {
     this.emitEvent("security.rejection", {
-      sessionId: record.id,
-      userId: record.userId,
-      reason,
-      message,
+      sessionId: params.record.id,
+      userId: params.record.userId,
+      reason: params.reason,
+      message: params.message,
+      affectedSessionIds: params.affectedSessionIds,
+      expectedIp: params.record.metadata?.ipAddress,
+      actualIp: params.context?.ipAddress,
+      expectedUserAgent: params.record.metadata?.userAgent,
+      actualUserAgent: params.context?.userAgent,
       timestamp: new Date(),
     });
   }

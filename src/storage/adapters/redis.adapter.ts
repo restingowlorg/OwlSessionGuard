@@ -78,14 +78,17 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     this.redis.defineCommand("ossecRotateSession", {
       numberOfKeys: 5, // [oldSessKey, oldTokenKey, userKey, newSessKey, newTokenKey]
       lua: `
+            -- 1. Retrieve the existing session record
             local data = redis.call('GET', KEYS[1])
             if not data then return redis.error_reply("ERR_SESSION_NOT_FOUND") end
             
+            -- 2. Validate that the existing session is active before allowing rotation
             local record = cjson.decode(data)
             if record.status ~= 'active' then
                 return redis.error_reply("ERR_SESSION_NOT_ACTIVE")
             end
             
+            -- 3. Parse input arguments
             local maxSessions = tonumber(ARGV[1])
             local oldUpdateJson = ARGV[2]
             local newRecordJson = ARGV[3]
@@ -97,27 +100,27 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
             local oldTokenHash = ARGV[9]
             local oldId = ARGV[10]
             
+            -- 4. Calculate the current timestamp in milliseconds
             local time = redis.call('TIME')
             local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
             
-            -- Limit check for the NEW session
+            -- 5. Purge expired sessions and enforce the session limits for the new active session
             redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now)
             if maxSessions > 0 then
                 local count = redis.call('ZCOUNT', KEYS[3], now, '+inf')
-                -- The old session is currently in this count, and will be removed.
-                -- So the net new count is 'count' (subtract 1, add 1).
-                -- If the current count > maxSessions, we shouldn't allow creation.
+                -- Note: The old session is still in the active count and will be removed.
+                -- Thus, net change in session count is 0 (old session deleted, new session added).
                 if count > maxSessions then
                     return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
                 end
             end
             
-            -- Update OLD (use passed-in fields to avoid re-decoding JSON)
+            -- 6. Update the old session status to 'rotated' and update its token index
             redis.call('SET', KEYS[1], oldUpdateJson, 'EX', ttl)
             redis.call('EXPIRE', KEYS[2], ttl)
             redis.call('ZREM', KEYS[3], oldId .. ":" .. oldTokenHash)
             
-            -- Create NEW
+            -- 7. Persist the new active session and index it under the user's active set
             redis.call('SET', KEYS[4], newRecordJson, 'EX', ttl)
             redis.call('SET', KEYS[5], newId, 'EX', ttl)
             redis.call('ZADD', KEYS[3], score, newId .. ":" .. newTokenHash)
@@ -130,9 +133,11 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     this.redis.defineCommand("ossecUpdateSession", {
       numberOfKeys: 2, // [sessKey, userKey]
       lua: `
+        -- 1. Retrieve the existing session record
         local data = redis.call('GET', KEYS[1])
         if not data then return nil end
         
+        -- 2. Decode the old record and parse input arguments
         local record = cjson.decode(data)
         local updates = cjson.decode(ARGV[1])
         local newTtl = tonumber(ARGV[2])
@@ -143,37 +148,51 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         local oldTokenHash = record.tokenHash
         local oldStatus = record.status
         
-        -- Terminal State Guard: Prevent overwriting audit trails of dead sessions
+        -- 3. Terminal State Guard: Prevent overwriting dead session audits (revoked or expired)
         if oldStatus == 'revoked' or oldStatus == 'expired' then
             return 1
         end
         
+        -- 4. Apply the requested field updates to the session record object
         for k,v in pairs(updates) do record[k] = v end
         local newTokenHash = record.tokenHash
         local status = record.status
         
+        -- 5. Calculate the current timestamp in milliseconds
         local time = redis.call('TIME')
         local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
         
+        -- 6. Update user's active session indices
         if status == 'active' then
+            -- Purge expired entries
             redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+            
+            -- If session is becoming active from an inactive state, enforce active limit count
             if oldStatus ~= 'active' and maxSessions > 0 then
                 local count = redis.call('ZCOUNT', KEYS[2], now, '+inf')
                 if count >= maxSessions then
                     return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
                 end
             end
+            
+            -- If token hash has rotated, remove old token entry from active list
             if oldTokenHash ~= newTokenHash then
                 redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
             end
+            
+            -- Add new token entry to active list and renew key expiry
             redis.call('ZADD', KEYS[2], newScore, record.id .. ":" .. newTokenHash)
             redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
         else
+            -- If session has been deactivated (revoked/expired), remove token entries from active list
             redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
             redis.call('ZREM', KEYS[2], record.id .. ":" .. newTokenHash)
         end
         
+        -- 7. Persist the updated session record back to Redis
         redis.call('SET', KEYS[1], cjson.encode(record), 'EX', newTtl)
+        
+        -- 8. Update individual token lookup indexes (Unlink old one if rotated)
         if oldTokenHash ~= newTokenHash then
             redis.call('UNLINK', tokenKeyPrefix .. oldTokenHash)
         end

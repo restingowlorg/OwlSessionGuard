@@ -187,6 +187,11 @@ export interface SessionLibraryConfig {
     maxSessionsPerRole?: Record<string, number>;
   };
 
+  concurrency?: {
+    lockTimeoutMs?: number;
+    pollIntervalMs?: number;
+  };
+
   store: {
     provider: "memory" | "redis" | "mongo" | "postgres" | "custom";
     redis?: {
