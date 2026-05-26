@@ -80,6 +80,28 @@ export class ConfigValidator {
       );
     }
 
+    // 5. Concurrency Validation
+    if (config.concurrency) {
+      if (
+        config.concurrency.lockTimeoutMs !== undefined &&
+        (typeof config.concurrency.lockTimeoutMs !== "number" ||
+          config.concurrency.lockTimeoutMs <= 0)
+      ) {
+        errors.push(
+          "Config Error: 'concurrency.lockTimeoutMs' must be a positive number.",
+        );
+      }
+      if (
+        config.concurrency.pollIntervalMs !== undefined &&
+        (typeof config.concurrency.pollIntervalMs !== "number" ||
+          config.concurrency.pollIntervalMs <= 0)
+      ) {
+        errors.push(
+          "Config Error: 'concurrency.pollIntervalMs' must be a positive number.",
+        );
+      }
+    }
+
     // Report results
     if (warnings.length > 0) {
       warnings.forEach((w) => console.warn(`[@ossec/auth] ${w}`));

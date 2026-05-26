@@ -61,4 +61,19 @@ export interface SessionStoreAdapter {
    * Count active sessions for a user (used for session limits).
    */
   countActiveForUser(userId: string): Promise<number>;
+
+  /**
+   * Optional: Acquire a transient lock for concurrency control.
+   */
+  acquireLock?(key: string, ttlMs: number): Promise<boolean>;
+
+  /**
+   * Optional: Release a previously acquired concurrency lock.
+   */
+  releaseLock?(key: string): Promise<void>;
+
+  /**
+   * Optional: Check if a concurrency lock is currently active.
+   */
+  isLocked?(key: string): Promise<boolean>;
 }

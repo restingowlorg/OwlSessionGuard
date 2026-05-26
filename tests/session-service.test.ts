@@ -1,6 +1,11 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 import { SessionService } from "../src/core/session.service";
 import { MemoryStoreAdapter } from "../src/storage/adapters/memory.adapter";
-import { SessionLibraryConfig, SessionStatus, SessionReasonCode } from "../src/types";
+import {
+  SessionLibraryConfig,
+  SessionStatus,
+  SessionReasonCode,
+} from "../src/types";
 
 describe("SessionService", () => {
   let service: SessionService;
@@ -50,9 +55,15 @@ describe("SessionService", () => {
     });
 
     it("should enforce session limits", async () => {
-      await service.createSession({ userId: "user-1", metadata: { ipAddress: "127.0.0.1" } });
-      await service.createSession({ userId: "user-1", metadata: { ipAddress: "127.0.0.1" } });
-      
+      await service.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      await service.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
       const result = await service.createSession({
         userId: "user-1",
         metadata: { ipAddress: "127.0.0.1" },
@@ -118,8 +129,9 @@ describe("SessionService", () => {
         expect(rotateResult.success).toBe(true);
         if (rotateResult.success) {
           expect(rotateResult.data.newToken).not.toBe(createResult.data.token);
-          
-          // Old token should be unusable
+
+          // Old token should be unusable after grace period
+          await new Promise((resolve) => setTimeout(resolve, 55));
           const validateOld = await service.validateSession({
             token: createResult.data.token,
             context: { ipAddress: "127.0.0.1" },
@@ -151,6 +163,34 @@ describe("SessionService", () => {
         });
         expect(validateResult.success).toBe(false);
       }
+    });
+  });
+
+  describe("Custom Concurrency Configuration", () => {
+    it("should successfully accept and initialize with custom concurrency settings", () => {
+      const customConfig: SessionLibraryConfig = {
+        ...config,
+        concurrency: {
+          lockTimeoutMs: 100,
+          pollIntervalMs: 10,
+        },
+      };
+      const customService = new SessionService(store, customConfig);
+      expect(customService).toBeDefined();
+    });
+
+    it("should reject invalid concurrency settings during validation", () => {
+      const { ConfigValidator } = require("../src/config/validator");
+      const invalidConfig = {
+        ...config,
+        concurrency: {
+          lockTimeoutMs: -10,
+        },
+      } as unknown as SessionLibraryConfig;
+
+      expect(() => ConfigValidator.validate(invalidConfig)).toThrow(
+        /must be a positive number/,
+      );
     });
   });
 });

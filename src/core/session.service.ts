@@ -1,3 +1,4 @@
+import { EventEmitter } from "events";
 import { v4 as uuidv4 } from "uuid";
 import { ISessionService } from "../interfaces";
 import { fastHash, generateBase64UrlToken } from "../infra/crypto/crypto";
@@ -12,18 +13,42 @@ import {
   SessionReasonCode,
   SessionLibraryConfig,
   SessionSuccess,
+  SecurityEvaluationContext,
 } from "../types";
 import { SessionStoreAdapter } from "../storage/contracts";
 import { SessionStateMachine } from "./state-machine";
+import { SecurityPolicyEvaluator } from "./security-policy-evaluator";
 
 /**
- * SessionService — Implementation of core session logic.
+ * SessionService — Core session manager supporting locking concurrency queues,
+ * Automatic Reuse Detection (ARD) cascading tree revocation, and strongly-typed observability.
  */
 export class SessionService implements ISessionService {
+  private readonly evaluator: SecurityPolicyEvaluator;
+  private readonly events = new EventEmitter();
+
   constructor(
     private readonly store: SessionStoreAdapter,
     private readonly config: SessionLibraryConfig,
-  ) {}
+  ) {
+    this.evaluator = new SecurityPolicyEvaluator(config);
+  }
+
+  /**
+   * Register a session security/observability event listener.
+   */
+  public on(event: string, listener: (...args: unknown[]) => void): this {
+    this.events.on(event, listener);
+    return this;
+  }
+
+  /**
+   * Deregister a session security/observability event listener.
+   */
+  public off(event: string, listener: (...args: unknown[]) => void): this {
+    this.events.off(event, listener);
+    return this;
+  }
 
   /**
    * Create a new session.
@@ -35,7 +60,6 @@ export class SessionService implements ISessionService {
     }>
   > {
     try {
-      // We delegate the limit check to the atomic storage layer to prevent race conditions
       const maxSessions = this.config.limits.maxSessionsPerUser;
 
       const { token, tokenHash } = this.generateSecureToken();
@@ -64,6 +88,13 @@ export class SessionService implements ISessionService {
 
       await this.store.create(record, maxSessions);
 
+      // Emit session creation event
+      this.emitEvent("session.created", {
+        sessionId: record.id,
+        userId: record.userId,
+        timestamp: now,
+      });
+
       return {
         success: true,
         data: { token, record },
@@ -89,49 +120,98 @@ export class SessionService implements ISessionService {
   ): Promise<SessionOpResult<SessionRecord>> {
     try {
       const tokenHash = fastHash(params.token);
-      const record = await this.store.findByTokenHash(tokenHash);
+      let record = await this.store.findByTokenHash(tokenHash);
 
       if (!record) {
         return this.fail("Invalid session token", 401);
       }
 
-      const now = new Date();
+      const lockKey = `lock:rotate:${record.id}`;
 
-      // Check lifecycle status via state machine
-      if (!SessionStateMachine.isUsable(record.status)) {
-        return this.fail(`Session is in ${record.status} state`, 401);
-      }
+      // In-flight concurrency lock queue check (Mitigated: 50ms hard cap, 5ms polls)
+      if (record.status === SessionStatus.ROTATED && this.store.isLocked) {
+        let isLocked = await this.store.isLocked(lockKey);
+        if (isLocked) {
+          const startTime = Date.now();
+          const capMs = this.config.concurrency?.lockTimeoutMs || 50;
+          const retryIntervalMs = this.config.concurrency?.pollIntervalMs || 5;
 
-      // Check expiration
-      const expiry = SessionStateMachine.checkExpiration(
-        now,
-        record.expiresAt,
-        record.idleExpiresAt,
-      );
-      if (expiry.isExpired) {
-        const reason = expiry.reason || SessionReasonCode.ABSOLUTE_TIMEOUT;
-        await this.store.update(record.id, {
-          status: SessionStatus.EXPIRED,
-          revocationReason: reason,
-        });
-        return this.fail(`Session expired: ${reason}`, 401, reason);
-      }
+          while (isLocked && Date.now() - startTime < capMs) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, retryIntervalMs),
+            );
+            isLocked = await this.store.isLocked(lockKey);
+          }
 
-      // IP Binding check
-      if (this.config.security.ipBinding !== "off") {
-        if (record.metadata.ipAddress !== params.context.ipAddress) {
-          if (this.config.security.ipBinding === "hard") {
-            await this.revokeSession({
-              sessionId: record.id,
-              reason: SessionReasonCode.IP_MISMATCH,
-            });
+          if (isLocked) {
+            // Suspended request cap exhausted -> immediately abort to free up resources (DoS mitigation)
             return this.fail(
-              "IP mismatch - session revoked",
+              "Concurrent request timeout - session locked",
               401,
-              SessionReasonCode.IP_MISMATCH,
             );
           }
+
+          // Re-fetch record to get updated post-lock state (A -> B transition completes)
+          const updatedRecord = await this.store.findById(record.id);
+          if (updatedRecord) {
+            record = updatedRecord;
+          }
         }
+      }
+
+      const now = new Date();
+      const evaluationContext: SecurityEvaluationContext = {
+        ipAddress: params.context.ipAddress,
+        userAgent: params.context.userAgent,
+        deviceFingerprint: params.context.deviceFingerprint,
+        method: params.context.method || "GET",
+      };
+
+      // Invoke Pipeline Policy Guard
+      const evaluation = this.evaluator.evaluate(
+        record,
+        evaluationContext,
+        now,
+      );
+
+      if (!evaluation.isValid) {
+        const reason = evaluation.reason || SessionReasonCode.SECURITY_BREACH;
+
+        let affectedSessionIds: string[] | undefined;
+        if (evaluation.actionRequired === "revoke") {
+          await this.revokeSession({
+            sessionId: record.id,
+            reason,
+          });
+        } else if (evaluation.actionRequired === "revoke_tree") {
+          // Automatic Reuse Detection (ARD): cascade revoke of the entire family tree
+          affectedSessionIds = await this.revokeSessionTree(record.id, reason);
+        }
+
+        // Emit breach alert event
+        this.emitSecurityRejection({
+          record,
+          reason,
+          message: evaluation.message,
+          affectedSessionIds,
+          context: evaluationContext,
+        });
+
+        return this.fail(
+          evaluation.message || "Security violation",
+          401,
+          reason,
+        );
+      }
+
+      // Soft context binding warnings
+      if (evaluation.reason) {
+        this.emitSecurityRejection({
+          record,
+          reason: evaluation.reason,
+          message: evaluation.message,
+          context: evaluationContext,
+        });
       }
 
       // Rolling expiration update
@@ -165,20 +245,29 @@ export class SessionService implements ISessionService {
       record: SessionRecord;
     }>
   > {
-    try {
-      const oldTokenHash = fastHash(params.token);
-      const record = await this.store.findByTokenHash(oldTokenHash);
+    const oldTokenHash = fastHash(params.token);
+    const record = await this.store.findByTokenHash(oldTokenHash);
 
-      if (
-        !record ||
-        !SessionStateMachine.isValidTransition(
-          record.status,
-          SessionStatus.ROTATED,
-        )
-      ) {
-        return this.fail("Invalid or unusable session for rotation", 401);
+    if (
+      !record ||
+      !SessionStateMachine.isValidTransition(
+        record.status,
+        SessionStatus.ROTATED,
+      )
+    ) {
+      return this.fail("Invalid or unusable session for rotation", 401);
+    }
+
+    // Set up transition lock key (Mitigated: 500ms max TTL)
+    const lockKey = `lock:rotate:${record.id}`;
+    if (this.store.acquireLock) {
+      const acquired = await this.store.acquireLock(lockKey, 500);
+      if (!acquired) {
+        return this.fail("Session rotation already in progress", 409);
       }
+    }
 
+    try {
       const { token: newToken, tokenHash: newTokenHash } =
         this.generateSecureToken();
 
@@ -194,16 +283,28 @@ export class SessionService implements ISessionService {
         parentSessionId: record.id,
       };
 
-      // Atomic rotation (1-to-1 replacement) via storage layer
+      const oldUpdates: Partial<SessionRecord> = {
+        status: SessionStatus.ROTATED,
+        revokedAt: now,
+        childSessionId: newRecord.id, // Direct pointer link for ARD traversal
+        revocationReason: params.reason || SessionReasonCode.ROTATION,
+      };
+
+      // Atomic rotation in database adapter
       await this.store.rotate(
         record.id,
         newRecord,
-        {
-          status: SessionStatus.ROTATED,
-          revocationReason: params.reason || SessionReasonCode.ROTATION,
-        },
+        oldUpdates,
         this.config.limits.maxSessionsPerUser,
       );
+
+      // Emit rotation success event
+      this.emitEvent("session.rotated", {
+        oldSessionId: record.id,
+        newSessionId: newRecord.id,
+        userId: record.userId,
+        timestamp: now,
+      });
 
       return {
         success: true,
@@ -219,6 +320,11 @@ export class SessionService implements ISessionService {
         );
       }
       return this.handleError("Rotation error", error);
+    } finally {
+      // Guarantee lock release even if database write fails (Anti-Hang Mitigation)
+      if (this.store.releaseLock) {
+        await this.store.releaseLock(lockKey);
+      }
     }
   }
 
@@ -239,7 +345,6 @@ export class SessionService implements ISessionService {
 
       if (!record) return this.fail("Session not found", 404);
 
-      // Check if the session is already in a terminal state
       if (
         !SessionStateMachine.isValidTransition(
           record.status,
@@ -259,6 +364,14 @@ export class SessionService implements ISessionService {
         revocationReason: params.reason,
       });
 
+      // Emit revocation event
+      this.emitEvent("session.revoked", {
+        sessionId: record.id,
+        userId: record.userId,
+        reason: params.reason,
+        timestamp: new Date(),
+      });
+
       return {
         success: true,
         data: { acknowledged: true, timestamp: new Date() },
@@ -274,14 +387,16 @@ export class SessionService implements ISessionService {
    */
   public async revokeAllSessionsForUser(
     userId: string,
-    _reason: SessionReasonCode,
+    reason: SessionReasonCode,
   ): Promise<SessionOpResult<SessionSuccess>> {
     try {
-      // In a real implementation, we might want to update all records to REVOKED
-      // rather than just deleting them, to maintain an audit trail.
-      // For now, we'll follow the store's delete pattern but we could also
-      // iterate and update status if the store supports it.
       await this.store.deleteAllForUser(userId);
+
+      this.emitEvent("user.all_sessions_revoked", {
+        userId,
+        reason,
+        timestamp: new Date(),
+      });
 
       return {
         success: true,
@@ -293,11 +408,81 @@ export class SessionService implements ISessionService {
     }
   }
 
+  /**
+   * Recursively revokes a session and its descendants (Automatic Reuse Detection).
+   */
+  private async revokeSessionTree(
+    sessionId: string,
+    reason: SessionReasonCode,
+    visited: Set<string> = new Set(),
+    affectedIds: string[] = [],
+  ): Promise<string[]> {
+    if (visited.has(sessionId)) return affectedIds;
+    visited.add(sessionId);
+
+    const record = await this.store.findById(sessionId);
+    if (!record) return affectedIds;
+
+    if (record.status !== SessionStatus.REVOKED) {
+      await this.store.update(record.id, {
+        status: SessionStatus.REVOKED,
+        revokedAt: new Date(),
+        revocationReason: reason,
+      });
+
+      affectedIds.push(record.id);
+
+      this.emitEvent("session.revoked", {
+        sessionId: record.id,
+        userId: record.userId,
+        reason,
+        timestamp: new Date(),
+      });
+    }
+
+    if (record.childSessionId) {
+      await this.revokeSessionTree(
+        record.childSessionId,
+        reason,
+        visited,
+        affectedIds,
+      );
+    }
+
+    return affectedIds;
+  }
+
   private generateSecureToken(): { token: string; tokenHash: string } {
-    // 32 bytes = 256 bits of entropy
     const token = generateBase64UrlToken(32);
     const tokenHash = fastHash(token);
     return { token, tokenHash };
+  }
+
+  private emitEvent(event: string, payload: Record<string, unknown>): void {
+    if (this.config.observability.emitEvents) {
+      this.events.emit(event, payload);
+    }
+  }
+
+  private emitSecurityRejection(params: {
+    record: SessionRecord;
+    reason: SessionReasonCode;
+    message?: string;
+    affectedSessionIds?: string[];
+    context?: SecurityEvaluationContext;
+  }): void {
+    this.emitEvent("security.rejection", {
+      sessionId: params.record.id,
+      userId: params.record.userId,
+      reason: params.reason,
+      message: params.message,
+      affectedSessionIds: params.affectedSessionIds,
+      expectedIp: params.record.metadata?.ipAddress,
+      actualIp: params.context?.ipAddress,
+      expectedUserAgent: params.record.metadata?.userAgent,
+      actualUserAgent: params.context?.userAgent,
+      timestamp: new Date(),
+    });
   }
 
   private fail<T>(

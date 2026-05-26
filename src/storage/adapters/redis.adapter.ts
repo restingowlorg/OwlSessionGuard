@@ -70,21 +70,25 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
     /**
      * ossecRotateSession:
-     * 1. Check if OLD session is active.
+     * 1. Check if OLD session is active (read once, atomically, inside Lua).
      * 2. Set OLD to rotated.
      * 3. Create NEW session and indices.
+     * ARGV[9] = oldTokenHash, ARGV[10] = oldId (passed from TS to avoid pre-fetch round-trip)
      */
     this.redis.defineCommand("ossecRotateSession", {
       numberOfKeys: 5, // [oldSessKey, oldTokenKey, userKey, newSessKey, newTokenKey]
       lua: `
+            -- 1. Retrieve the existing session record
             local data = redis.call('GET', KEYS[1])
             if not data then return redis.error_reply("ERR_SESSION_NOT_FOUND") end
             
+            -- 2. Validate that the existing session is active before allowing rotation
             local record = cjson.decode(data)
             if record.status ~= 'active' then
                 return redis.error_reply("ERR_SESSION_NOT_ACTIVE")
             end
             
+            -- 3. Parse input arguments
             local maxSessions = tonumber(ARGV[1])
             local oldUpdateJson = ARGV[2]
             local newRecordJson = ARGV[3]
@@ -93,26 +97,30 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
             local ttl = tonumber(ARGV[6])
             local score = tonumber(ARGV[7])
             local userIndexTtl = tonumber(ARGV[8])
+            local oldTokenHash = ARGV[9]
+            local oldId = ARGV[10]
             
+            -- 4. Calculate the current timestamp in milliseconds
             local time = redis.call('TIME')
             local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
             
-            -- Limit check for the NEW session
+            -- 5. Purge expired sessions and enforce the session limits for the new active session
             redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now)
             if maxSessions > 0 then
                 local count = redis.call('ZCOUNT', KEYS[3], now, '+inf')
-                -- Subtract 1 because we are about to rotate the current one out
-                if count >= maxSessions then
+                -- Note: The old session is still in the active count and will be removed.
+                -- Thus, net change in session count is 0 (old session deleted, new session added).
+                if count > maxSessions then
                     return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
                 end
             end
             
-            -- Update OLD
+            -- 6. Update the old session status to 'rotated' and update its token index
             redis.call('SET', KEYS[1], oldUpdateJson, 'EX', ttl)
-            redis.call('UNLINK', KEYS[2])
-            redis.call('ZREM', KEYS[3], record.id .. ":" .. record.tokenHash)
+            redis.call('EXPIRE', KEYS[2], ttl)
+            redis.call('ZREM', KEYS[3], oldId .. ":" .. oldTokenHash)
             
-            -- Create NEW
+            -- 7. Persist the new active session and index it under the user's active set
             redis.call('SET', KEYS[4], newRecordJson, 'EX', ttl)
             redis.call('SET', KEYS[5], newId, 'EX', ttl)
             redis.call('ZADD', KEYS[3], score, newId .. ":" .. newTokenHash)
@@ -125,9 +133,11 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     this.redis.defineCommand("ossecUpdateSession", {
       numberOfKeys: 2, // [sessKey, userKey]
       lua: `
+        -- 1. Retrieve the existing session record
         local data = redis.call('GET', KEYS[1])
         if not data then return nil end
         
+        -- 2. Decode the old record and parse input arguments
         local record = cjson.decode(data)
         local updates = cjson.decode(ARGV[1])
         local newTtl = tonumber(ARGV[2])
@@ -138,37 +148,51 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         local oldTokenHash = record.tokenHash
         local oldStatus = record.status
         
-        -- Terminal State Guard: Prevent overwriting audit trails of dead sessions
+        -- 3. Terminal State Guard: Prevent overwriting dead session audits (revoked or expired)
         if oldStatus == 'revoked' or oldStatus == 'expired' then
             return 1
         end
         
+        -- 4. Apply the requested field updates to the session record object
         for k,v in pairs(updates) do record[k] = v end
         local newTokenHash = record.tokenHash
         local status = record.status
         
+        -- 5. Calculate the current timestamp in milliseconds
         local time = redis.call('TIME')
         local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
         
+        -- 6. Update user's active session indices
         if status == 'active' then
+            -- Purge expired entries
             redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+            
+            -- If session is becoming active from an inactive state, enforce active limit count
             if oldStatus ~= 'active' and maxSessions > 0 then
                 local count = redis.call('ZCOUNT', KEYS[2], now, '+inf')
                 if count >= maxSessions then
                     return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
                 end
             end
+            
+            -- If token hash has rotated, remove old token entry from active list
             if oldTokenHash ~= newTokenHash then
                 redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
             end
+            
+            -- Add new token entry to active list and renew key expiry
             redis.call('ZADD', KEYS[2], newScore, record.id .. ":" .. newTokenHash)
             redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
         else
+            -- If session has been deactivated (revoked/expired), remove token entries from active list
             redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
             redis.call('ZREM', KEYS[2], record.id .. ":" .. newTokenHash)
         end
         
+        -- 7. Persist the updated session record back to Redis
         redis.call('SET', KEYS[1], cjson.encode(record), 'EX', newTtl)
+        
+        -- 8. Update individual token lookup indexes (Unlink old one if rotated)
         if oldTokenHash ~= newTokenHash then
             redis.call('UNLINK', tokenKeyPrefix .. oldTokenHash)
         end
@@ -235,10 +259,14 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     oldUpdates: Partial<SessionRecord>,
     maxSessions?: number,
   ): Promise<void> {
+    // Read the old record ONCE here to build the merged update JSON and derive
+    // key components. The Lua script reuses the passed-in fields directly,
+    // eliminating the redundant second GET that existed before inside Lua.
     const oldRecord = await this.findById(oldId);
     if (!oldRecord) throw new Error("SESSION_NOT_FOUND");
 
     const ttl = this.calculateTTL(newRecord.expiresAt);
+    const mergedOldJson = JSON.stringify({ ...oldRecord, ...oldUpdates });
 
     try {
       // @ts-expect-error - custom command
@@ -249,13 +277,15 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         this.key("sess", newRecord.id),
         this.key("idx:token", newRecord.tokenHash),
         maxSessions || 0,
-        JSON.stringify({ ...oldRecord, ...oldUpdates }),
+        mergedOldJson,
         JSON.stringify(newRecord),
         newRecord.id,
         newRecord.tokenHash,
         ttl,
         newRecord.expiresAt.getTime(),
         this.maxAbsTimeout,
+        oldRecord.tokenHash, // ARGV[9]: passed to Lua to avoid re-decoding JSON
+        oldId, // ARGV[10]: passed to Lua to avoid re-decoding JSON
       );
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -369,5 +399,19 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     record.idleExpiresAt = new Date(record.idleExpiresAt);
     if (record.revokedAt) record.revokedAt = new Date(record.revokedAt);
     return record;
+  }
+
+  async acquireLock(key: string, ttlMs: number): Promise<boolean> {
+    const res = await this.redis.set(key, "locked", "PX", ttlMs, "NX");
+    return res === "OK";
+  }
+
+  async releaseLock(key: string): Promise<void> {
+    await this.redis.del(key);
+  }
+
+  async isLocked(key: string): Promise<boolean> {
+    const exists = await this.redis.exists(key);
+    return exists === 1;
   }
 }
