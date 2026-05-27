@@ -142,10 +142,21 @@ describe("Express Middleware", () => {
     mockReq.cookies = { sid: "token", "x-csrf-token": "secret" };
     mockReq.headers = { "x-csrf-token": "mismatch" };
 
+    mockService.validateSession.mockResolvedValue({
+      success: false,
+      error: { message: "CSRF Mismatch", code: "CSRF_ERROR" },
+      httpCode: 403,
+    });
+
     await middleware(mockReq as Request, mockRes as Response, next);
 
     expect(mockReq.session).toBeUndefined();
-    expect(mockService.validateSession).not.toHaveBeenCalled();
+    expect(mockService.validateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: "token",
+        csrfToken: "mismatch",
+      })
+    );
     expect(next).toHaveBeenCalled();
   });
 });

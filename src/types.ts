@@ -66,6 +66,7 @@ export interface SessionRecord {
 
   // Security Binding
   metadata: SessionMetadata;
+  csrfToken?: string; // State-bound double submit CSRF token
 
   // Revocation
   revokedAt?: Date;
@@ -118,6 +119,7 @@ export interface CreateSessionParams {
 
 export interface ValidateSessionParams {
   token: string;
+  csrfToken?: string; // Optional client-provided CSRF token for validation
   context: SessionMetadata & { method?: string };
 }
 
@@ -227,6 +229,7 @@ export interface SecurityEvaluationContext {
   userAgent?: string;
   deviceFingerprint?: string;
   method: string; // HTTP method of the current request (used to enforce read-only grace checks)
+  csrfToken?: string; // Client-provided CSRF token
 }
 
 /**

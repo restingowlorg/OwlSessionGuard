@@ -18,6 +18,7 @@ import {
 import { SessionStoreAdapter } from "../storage/contracts";
 import { SessionStateMachine } from "./state-machine";
 import { SecurityPolicyEvaluator } from "./security-policy-evaluator";
+import { ConfigValidator } from "./config-validator";
 
 /**
  * SessionService — Core session manager supporting locking concurrency queues,
@@ -31,6 +32,7 @@ export class SessionService implements ISessionService {
     private readonly store: SessionStoreAdapter,
     private readonly config: SessionLibraryConfig,
   ) {
+    ConfigValidator.validate(config);
     this.evaluator = new SecurityPolicyEvaluator(config);
   }
 
@@ -84,6 +86,9 @@ export class SessionService implements ISessionService {
         expiresAt,
         idleExpiresAt,
         metadata: params.metadata,
+        csrfToken: this.config.security.csrf.enabled
+          ? generateBase64UrlToken(32)
+          : undefined,
       };
 
       await this.store.create(record, maxSessions);
@@ -165,6 +170,7 @@ export class SessionService implements ISessionService {
         userAgent: params.context.userAgent,
         deviceFingerprint: params.context.deviceFingerprint,
         method: params.context.method || "GET",
+        csrfToken: params.csrfToken,
       };
 
       // Invoke Pipeline Policy Guard

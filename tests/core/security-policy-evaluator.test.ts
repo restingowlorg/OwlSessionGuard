@@ -315,6 +315,133 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
   });
 
+  describe("CSRF Validation Enforcement", () => {
+    it("should allow state-changing request if CSRF token matches", () => {
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = {
+        id: "sess-1",
+        userId: "user-1",
+        tokenHash: "hash-1",
+        status: SessionStatus.ACTIVE,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: new Date(Date.now() + 100000),
+        idleExpiresAt: new Date(Date.now() + 100000),
+        roles: [],
+        scopes: [],
+        metadata: { ipAddress: "192.168.1.1" },
+        csrfToken: "super-secret-csrf-token",
+      };
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: "super-secret-csrf-token", // Matches!
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject state-changing request if CSRF token is missing", () => {
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = {
+        id: "sess-1",
+        userId: "user-1",
+        tokenHash: "hash-1",
+        status: SessionStatus.ACTIVE,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: new Date(Date.now() + 100000),
+        idleExpiresAt: new Date(Date.now() + 100000),
+        roles: [],
+        scopes: [],
+        metadata: { ipAddress: "192.168.1.1" },
+        csrfToken: "super-secret-csrf-token",
+      };
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "DELETE",
+        // No csrfToken provided
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    it("should reject state-changing request if CSRF token mismatches", () => {
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = {
+        id: "sess-1",
+        userId: "user-1",
+        tokenHash: "hash-1",
+        status: SessionStatus.ACTIVE,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: new Date(Date.now() + 100000),
+        idleExpiresAt: new Date(Date.now() + 100000),
+        roles: [],
+        scopes: [],
+        metadata: { ipAddress: "192.168.1.1" },
+        csrfToken: "super-secret-csrf-token",
+      };
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "PUT",
+        csrfToken: "hacker-token", // Mismatch
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    it("should ignore CSRF for non-state-changing GET requests even if token is missing", () => {
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = {
+        id: "sess-1",
+        userId: "user-1",
+        tokenHash: "hash-1",
+        status: SessionStatus.ACTIVE,
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: new Date(Date.now() + 100000),
+        idleExpiresAt: new Date(Date.now() + 100000),
+        roles: [],
+        scopes: [],
+        metadata: { ipAddress: "192.168.1.1" },
+        csrfToken: "super-secret-csrf-token",
+      };
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "GET", // Safe method
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+  });
+
   describe("In-Flight Lock Concurrency Synchronization (Integration)", () => {
     it("should hold concurrent GET requests while rotation lock is active and succeed once released", async () => {
       const createResult = await service.createSession({
