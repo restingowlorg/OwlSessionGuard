@@ -86,6 +86,8 @@ export type SessionOpResult<T> =
       data: T;
       httpCode: number;
       newToken?: string;
+      newCsrfToken?: string;
+      clearCsrfToken?: boolean;
       error?: never;
     }
   | {
@@ -97,6 +99,7 @@ export type SessionOpResult<T> =
         reason?: SessionReasonCode;
       };
       httpCode: number;
+      clearCsrfToken?: boolean;
     };
 
 /**
@@ -178,7 +181,6 @@ export interface SessionLibraryConfig {
     fingerprinting: "off" | "soft" | "hard";
     csrf: {
       enabled: boolean;
-      mode: "double-submit" | "external";
       cookieName?: string;
       headerName?: string;
     };

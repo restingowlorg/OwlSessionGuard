@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as CryptoJS from "crypto-js";
 
 // ---------------- Session Helpers (Performance Optimized) ----------------
@@ -18,4 +19,20 @@ export function generateBase64UrlToken(length = 32): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
+}
+
+/**
+ * Constant-time string comparison to prevent timing attacks.
+ */
+export function constantTimeCompare(
+  a: string | undefined,
+  b: string | undefined,
+): boolean {
+  if (typeof a !== "string" || typeof b !== "string") {
+    return false;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }

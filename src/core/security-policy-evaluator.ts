@@ -1,4 +1,5 @@
 import { SessionStateMachine } from "./state-machine";
+import { constantTimeCompare } from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -121,7 +122,10 @@ export class SecurityPolicyEvaluator {
         m === "patch";
 
       if (isStateChanging) {
-        if (!context.csrfToken || context.csrfToken !== record.csrfToken) {
+        if (
+          !context.csrfToken ||
+          !constantTimeCompare(context.csrfToken, record.csrfToken)
+        ) {
           return {
             isValid: false,
             isWithinGracePeriod: false,

@@ -48,6 +48,15 @@ export class ConfigValidator {
             "[REMEDIATION]: Ensure your application is served over HTTPS and update 'config.transport.cookie.secure' to true.",
         );
       }
+
+      if (cookieConfig.httpOnly !== true) {
+        throw new FatalSecurityError(
+          "INSECURE CONFIGURATION DETECTED: \n" +
+            "You are running in 'production' environment but 'transport.cookie.httpOnly' is not set to true.\n" +
+            "This allows client-side JavaScript to read the session cookie, exposing it to Cross-Site Scripting (XSS) attacks.\n" +
+            "[REMEDIATION]: Update 'config.transport.cookie.httpOnly' to true.",
+        );
+      }
     }
   }
 }

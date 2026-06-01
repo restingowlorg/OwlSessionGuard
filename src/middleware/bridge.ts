@@ -38,7 +38,6 @@ export class BridgeProcessor {
   private readonly cookieOptions: CookieOptions;
   private readonly csrfConfig: {
     enabled: boolean;
-    mode: "double-submit" | "external";
     cookieName: string;
     headerName: string;
   };
