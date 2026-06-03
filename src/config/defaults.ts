@@ -33,7 +33,7 @@ export const DEFAULT_CONFIG: Partial<SessionLibraryConfig> = {
     fingerprinting: "off",
     csrf: {
       enabled: true,
-      mode: "double-submit",
+      cookieName: "x-csrf-token",
     },
   },
 

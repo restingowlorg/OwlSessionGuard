@@ -14,10 +14,12 @@ import {
   SessionLibraryConfig,
   SessionSuccess,
   SecurityEvaluationContext,
+  SecurityEvaluationResult,
 } from "../types";
 import { SessionStoreAdapter } from "../storage/contracts";
 import { SessionStateMachine } from "./state-machine";
 import { SecurityPolicyEvaluator } from "./security-policy-evaluator";
+import { ConfigValidator } from "./config-validator";
 
 /**
  * SessionService — Core session manager supporting locking concurrency queues,
@@ -31,6 +33,7 @@ export class SessionService implements ISessionService {
     private readonly store: SessionStoreAdapter,
     private readonly config: SessionLibraryConfig,
   ) {
+    ConfigValidator.validate(config);
     this.evaluator = new SecurityPolicyEvaluator(config);
   }
 
@@ -84,6 +87,9 @@ export class SessionService implements ISessionService {
         expiresAt,
         idleExpiresAt,
         metadata: params.metadata,
+        csrfToken: this.config.security.csrf.enabled
+          ? generateBase64UrlToken(32)
+          : undefined,
       };
 
       await this.store.create(record, maxSessions);
@@ -99,6 +105,7 @@ export class SessionService implements ISessionService {
         success: true,
         data: { token, record },
         httpCode: 201,
+        newCsrfToken: record.csrfToken,
       };
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
@@ -123,41 +130,19 @@ export class SessionService implements ISessionService {
       let record = await this.store.findByTokenHash(tokenHash);
 
       if (!record) {
-        return this.fail("Invalid session token", 401);
+        return this.fail("Invalid session token", 401, undefined, true);
       }
 
-      const lockKey = `lock:rotate:${record.id}`;
-
-      // In-flight concurrency lock queue check (Mitigated: 50ms hard cap, 5ms polls)
-      if (record.status === SessionStatus.ROTATED && this.store.isLocked) {
-        let isLocked = await this.store.isLocked(lockKey);
-        if (isLocked) {
-          const startTime = Date.now();
-          const capMs = this.config.concurrency?.lockTimeoutMs || 50;
-          const retryIntervalMs = this.config.concurrency?.pollIntervalMs || 5;
-
-          while (isLocked && Date.now() - startTime < capMs) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, retryIntervalMs),
-            );
-            isLocked = await this.store.isLocked(lockKey);
-          }
-
-          if (isLocked) {
-            // Suspended request cap exhausted -> immediately abort to free up resources (DoS mitigation)
-            return this.fail(
-              "Concurrent request timeout - session locked",
-              401,
-            );
-          }
-
-          // Re-fetch record to get updated post-lock state (A -> B transition completes)
-          const updatedRecord = await this.store.findById(record.id);
-          if (updatedRecord) {
-            record = updatedRecord;
-          }
-        }
+      const lockResult = await this.handleRotationLockQueue(record);
+      if (!lockResult.success) {
+        return this.fail(
+          "Concurrent request timeout - session locked",
+          401,
+          undefined,
+          true,
+        );
       }
+      record = lockResult.record;
 
       const now = new Date();
       const evaluationContext: SecurityEvaluationContext = {
@@ -165,6 +150,7 @@ export class SessionService implements ISessionService {
         userAgent: params.context.userAgent,
         deviceFingerprint: params.context.deviceFingerprint,
         method: params.context.method || "GET",
+        csrfToken: params.csrfToken,
       };
 
       // Invoke Pipeline Policy Guard
@@ -176,31 +162,18 @@ export class SessionService implements ISessionService {
 
       if (!evaluation.isValid) {
         const reason = evaluation.reason || SessionReasonCode.SECURITY_BREACH;
-
-        let affectedSessionIds: string[] | undefined;
-        if (evaluation.actionRequired === "revoke") {
-          await this.revokeSession({
-            sessionId: record.id,
-            reason,
-          });
-        } else if (evaluation.actionRequired === "revoke_tree") {
-          // Automatic Reuse Detection (ARD): cascade revoke of the entire family tree
-          affectedSessionIds = await this.revokeSessionTree(record.id, reason);
-        }
-
-        // Emit breach alert event
-        this.emitSecurityRejection({
+        await this.handlePolicyViolation(
           record,
+          evaluation,
+          evaluationContext,
           reason,
-          message: evaluation.message,
-          affectedSessionIds,
-          context: evaluationContext,
-        });
+        );
 
         return this.fail(
           evaluation.message || "Security violation",
           401,
           reason,
+          true,
         );
       }
 
@@ -310,6 +283,7 @@ export class SessionService implements ISessionService {
         success: true,
         data: { newToken, record: newRecord },
         httpCode: 200,
+        newCsrfToken: newRecord.csrfToken,
       };
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
@@ -355,6 +329,7 @@ export class SessionService implements ISessionService {
           success: true,
           data: { acknowledged: true, timestamp: new Date() },
           httpCode: 200,
+          clearCsrfToken: true,
         };
       }
 
@@ -376,6 +351,7 @@ export class SessionService implements ISessionService {
         success: true,
         data: { acknowledged: true, timestamp: new Date() },
         httpCode: 200,
+        clearCsrfToken: true,
       };
     } catch (error) {
       return this.handleError("Revocation error", error);
@@ -402,6 +378,7 @@ export class SessionService implements ISessionService {
         success: true,
         data: { acknowledged: true, timestamp: new Date() },
         httpCode: 200,
+        clearCsrfToken: true,
       };
     } catch (error) {
       return this.handleError("Failed to revoke all sessions", error);
@@ -452,6 +429,58 @@ export class SessionService implements ISessionService {
     return affectedIds;
   }
 
+  private async handleRotationLockQueue(
+    record: SessionRecord,
+  ): Promise<{ success: boolean; record: SessionRecord }> {
+    const lockKey = `lock:rotate:${record.id}`;
+
+    if (record.status === SessionStatus.ROTATED && this.store.isLocked) {
+      let isLocked = await this.store.isLocked(lockKey);
+      if (isLocked) {
+        const startTime = Date.now();
+        const capMs = this.config.concurrency?.lockTimeoutMs || 50;
+        const retryIntervalMs = this.config.concurrency?.pollIntervalMs || 5;
+
+        while (isLocked && Date.now() - startTime < capMs) {
+          await new Promise((resolve) => setTimeout(resolve, retryIntervalMs));
+          isLocked = await this.store.isLocked(lockKey);
+        }
+
+        if (isLocked) {
+          return { success: false, record };
+        }
+
+        const updatedRecord = await this.store.findById(record.id);
+        if (updatedRecord) {
+          return { success: true, record: updatedRecord };
+        }
+      }
+    }
+    return { success: true, record };
+  }
+
+  private async handlePolicyViolation(
+    record: SessionRecord,
+    evaluation: SecurityEvaluationResult,
+    evaluationContext: SecurityEvaluationContext,
+    reason: SessionReasonCode,
+  ): Promise<void> {
+    let affectedSessionIds: string[] | undefined;
+    if (evaluation.actionRequired === "revoke") {
+      await this.revokeSession({ sessionId: record.id, reason });
+    } else if (evaluation.actionRequired === "revoke_tree") {
+      affectedSessionIds = await this.revokeSessionTree(record.id, reason);
+    }
+
+    this.emitSecurityRejection({
+      record,
+      reason,
+      message: evaluation.message,
+      affectedSessionIds,
+      context: evaluationContext,
+    });
+  }
+
   private generateSecureToken(): { token: string; tokenHash: string } {
     const token = generateBase64UrlToken(32);
     const tokenHash = fastHash(token);
@@ -489,6 +518,7 @@ export class SessionService implements ISessionService {
     message: string,
     httpCode: number,
     reason?: SessionReasonCode,
+    clearCsrfToken?: boolean,
   ): SessionOpResult<T> {
     return {
       success: false,
@@ -498,6 +528,7 @@ export class SessionService implements ISessionService {
         reason,
       },
       httpCode,
+      ...(clearCsrfToken ? { clearCsrfToken: true } : {}),
     };
   }
 

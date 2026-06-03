@@ -1,4 +1,5 @@
 import { SessionStateMachine } from "./state-machine";
+import { constantTimeCompare } from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -106,7 +107,37 @@ export class SecurityPolicyEvaluator {
       };
     }
 
-    // 4. IP Context Binding check
+    // 4. CSRF Validation check
+    if (this.config.security.csrf.enabled) {
+      const m = context.method || "GET";
+      // O(1) Zero-allocation boolean evaluation
+      const isStateChanging =
+        m === "POST" ||
+        m === "PUT" ||
+        m === "DELETE" ||
+        m === "PATCH" ||
+        m === "post" ||
+        m === "put" ||
+        m === "delete" ||
+        m === "patch";
+
+      if (isStateChanging) {
+        if (
+          !context.csrfToken ||
+          !constantTimeCompare(context.csrfToken, record.csrfToken)
+        ) {
+          return {
+            isValid: false,
+            isWithinGracePeriod: false,
+            actionRequired: "none", // Do not revoke, just block the request (standard CSRF behavior, though some strict configs might revoke)
+            reason: SessionReasonCode.CSRF_VIOLATION,
+            message: "CSRF token mismatch or missing",
+          };
+        }
+      }
+    }
+
+    // 5. IP Context Binding check
     const ipConfig = this.config.security.ipBinding;
     if (ipConfig !== "off") {
       if (record.metadata.ipAddress !== context.ipAddress) {
@@ -131,7 +162,7 @@ export class SecurityPolicyEvaluator {
       }
     }
 
-    // 5. Device/User-Agent Fingerprinting check
+    // 6. Device/User-Agent Fingerprinting check
     const fpConfig = this.config.security.fingerprinting;
     if (fpConfig !== "off" && record.metadata.userAgent) {
       const userAgentMatch = record.metadata.userAgent === context.userAgent;

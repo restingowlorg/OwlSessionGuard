@@ -66,6 +66,7 @@ export interface SessionRecord {
 
   // Security Binding
   metadata: SessionMetadata;
+  csrfToken?: string; // State-bound double submit CSRF token
 
   // Revocation
   revokedAt?: Date;
@@ -85,6 +86,8 @@ export type SessionOpResult<T> =
       data: T;
       httpCode: number;
       newToken?: string;
+      newCsrfToken?: string;
+      clearCsrfToken?: boolean;
       error?: never;
     }
   | {
@@ -96,6 +99,7 @@ export type SessionOpResult<T> =
         reason?: SessionReasonCode;
       };
       httpCode: number;
+      clearCsrfToken?: boolean;
     };
 
 /**
@@ -118,6 +122,7 @@ export interface CreateSessionParams {
 
 export interface ValidateSessionParams {
   token: string;
+  csrfToken?: string; // Optional client-provided CSRF token for validation
   context: SessionMetadata & { method?: string };
 }
 
@@ -176,7 +181,6 @@ export interface SessionLibraryConfig {
     fingerprinting: "off" | "soft" | "hard";
     csrf: {
       enabled: boolean;
-      mode: "double-submit" | "external";
       cookieName?: string;
       headerName?: string;
     };
@@ -227,6 +231,7 @@ export interface SecurityEvaluationContext {
   userAgent?: string;
   deviceFingerprint?: string;
   method: string; // HTTP method of the current request (used to enforce read-only grace checks)
+  csrfToken?: string; // Client-provided CSRF token
 }
 
 /**

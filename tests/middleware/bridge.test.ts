@@ -92,6 +92,8 @@ describe("BridgeProcessor", () => {
     expect(mockContext.getCookie).toHaveBeenCalledWith("test_sid");
     expect(validateFn).toHaveBeenCalledWith("valid_token", {
       ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
     });
     expect(mockContext.setSession).toHaveBeenCalledWith(sessionRecord);
   });
@@ -154,7 +156,7 @@ describe("BridgeProcessor", () => {
     await processor.handle(mockContext, validateFn);
 
     expect(mockContext.getHeader).toHaveBeenCalledWith("x-session-id");
-    expect(validateFn).toHaveBeenCalledWith("header_token", expect.any(Object));
+    expect(validateFn).toHaveBeenCalledWith("header_token", expect.objectContaining({ ipAddress: "127.0.0.1" }));
   });
 
   it("should support Bearer scheme in header", async () => {
@@ -177,7 +179,7 @@ describe("BridgeProcessor", () => {
       });
     await processor.handle(mockContext, validateFn);
 
-    expect(validateFn).toHaveBeenCalledWith("bearer_token", expect.any(Object));
+    expect(validateFn).toHaveBeenCalledWith("bearer_token", expect.objectContaining({ ipAddress: "127.0.0.1" }));
   });
 
   it("should support custom CSRF cookie and header names", async () => {
@@ -214,7 +216,6 @@ describe("BridgeProcessor", () => {
     const result = await processor.handle(mockContext, validateFn);
 
     expect(result).toBe(true);
-    expect(mockContext.getCookie).toHaveBeenCalledWith("CUSTOM_CSRF_COOKIE");
     expect(mockContext.getHeader).toHaveBeenCalledWith("x-custom-csrf");
   });
 });

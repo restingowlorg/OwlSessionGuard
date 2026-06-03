@@ -38,7 +38,6 @@ export class BridgeProcessor {
   private readonly cookieOptions: CookieOptions;
   private readonly csrfConfig: {
     enabled: boolean;
-    mode: "double-submit" | "external";
     cookieName: string;
     headerName: string;
   };
@@ -78,7 +77,12 @@ export class BridgeProcessor {
     context: SessionWebContext,
     validateFn: (
       token: string,
-      clientInfo: { ipAddress: string; userAgent?: string },
+      clientInfo: {
+        ipAddress: string;
+        userAgent?: string;
+        method: string;
+        csrfToken?: string;
+      },
     ) => Promise<{
       success: boolean;
       data?: SessionRecord;
@@ -92,28 +96,18 @@ export class BridgeProcessor {
     const extraction = this.extractToken(context);
     if (!extraction) return false;
 
-    // 1. Optimized CSRF: Avoid toUpperCase() allocation
-    if (this.csrfConfig.enabled && this.csrfConfig.mode === "double-submit") {
-      const m = context.getMethod();
-      // Fast check for safe methods (idempotent)
-      const isSafe =
-        m === "GET" ||
-        m === "HEAD" ||
-        m === "OPTIONS" ||
-        m === "get" ||
-        m === "head" ||
-        m === "options";
-
-      if (!isSafe) {
-        const csrfCookie = context.getCookie(this.csrfConfig.cookieName);
-        const csrfHeader = context.getHeader(this.csrfConfig.headerName);
-        if (!csrfCookie || csrfCookie !== csrfHeader) {
-          return false;
-        }
-      }
+    let csrfToken: string | undefined;
+    if (this.csrfConfig.enabled) {
+      csrfToken = context.getHeader(this.csrfConfig.headerName);
     }
 
-    const result = await validateFn(extraction.token, context.getClientInfo());
+    const clientInfo = {
+      ...context.getClientInfo(),
+      method: context.getMethod(),
+      csrfToken,
+    };
+
+    const result = await validateFn(extraction.token, clientInfo);
 
     if (!result.success) {
       if (
@@ -194,18 +188,43 @@ export class BridgeProcessor {
       context.clearCookie(this.cookieName, this.cookieOptions);
     }
   }
+
+  public writeCsrfCookie(context: SessionWebContext, csrfToken: string) {
+    if (this.csrfConfig.enabled) {
+      context.setCookie(this.csrfConfig.cookieName, csrfToken, {
+        ...this.cookieOptions,
+        httpOnly: false, // CSRF token MUST be readable by frontend JS
+      });
+    }
+  }
+
+  public clearCsrfCookie(context: SessionWebContext) {
+    if (this.csrfConfig.enabled) {
+      context.clearCookie(this.csrfConfig.cookieName, {
+        ...this.cookieOptions,
+        httpOnly: false,
+      });
+    }
+  }
 }
 
 export function buildValidateFn(service: ISessionService) {
   return async (
     token: string,
-    clientInfo: { ipAddress: string; userAgent?: string },
+    clientInfo: {
+      ipAddress: string;
+      userAgent?: string;
+      method: string;
+      csrfToken?: string;
+    },
   ) => {
     const result = await service.validateSession({
       token,
+      csrfToken: clientInfo.csrfToken,
       context: {
         ipAddress: clientInfo.ipAddress,
         userAgent: clientInfo.userAgent,
+        method: clientInfo.method,
       },
     });
 
