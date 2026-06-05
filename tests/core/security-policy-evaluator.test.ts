@@ -6,7 +6,49 @@ import {
   SessionStatus,
   SessionReasonCode,
   SessionLibraryConfig,
+  DeviceOS,
+  DeviceBrowser,
+  DeviceType,
 } from "../../src/types";
+
+/**
+ * WHY: SessionRecord.metadata requires ResolvedDeviceContext (non-partial) because
+ * every real record produced by SessionService will always have deviceFingerprint and
+ * deviceContext set. Tests that do not exercise fingerprinting should use this factory
+ * to satisfy the type contract without cluttering the test body with irrelevant fields.
+ */
+const createBaseRecord = (
+  overrides: Partial<Omit<SessionRecord, "metadata">> & {
+    metadata?: Partial<SessionRecord["metadata"]>;
+  } = {},
+): SessionRecord => {
+  const { metadata: metadataOverride = {}, ...recordOverrides } = overrides;
+  return {
+    id: "sess-1",
+    userId: "user-1",
+    tokenHash: "hash-1",
+    status: SessionStatus.ACTIVE,
+    createdAt: new Date(),
+    lastUsedAt: new Date(),
+    expiresAt: new Date(Date.now() + 100000),
+    idleExpiresAt: new Date(Date.now() + 100000),
+    roles: [],
+    scopes: [],
+    metadata: {
+      ipAddress: "192.168.1.1",
+      userAgent: "Mozilla",
+      // WHY: Default to a fallback_ prefixed fingerprint so that fingerprint-unaware
+      // tests automatically bypass Step 6B enforcement (which only runs on persistent FPs).
+      // Tests that specifically exercise fingerprint enforcement must override this with
+      // a persistent FP (e.g. "persistent_fp_abc") via the metadata override.
+      deviceFingerprint: "fallback_test-sentinel",
+      deviceContext: { os: DeviceOS.UNKNOWN, browser: DeviceBrowser.UNKNOWN, type: DeviceType.DESKTOP },
+      ...metadataOverride,
+    },
+    ...recordOverrides,
+  };
+};
+
 
 describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
   let evaluator: SecurityPolicyEvaluator;
@@ -30,7 +72,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       enforceTlsInProduction: false,
       ipBinding: "hard",
       fingerprinting: "hard",
-      csrf: { enabled: false, mode: "double-submit" },
+      csrf: { enabled: false },
     },
     limits: { maxSessionsPerUser: 3 },
     store: { provider: "memory" },
@@ -45,19 +87,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
   describe("SecurityPolicyEvaluator Pipeline Rules", () => {
     it("should allow active valid sessions", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      const record: SessionRecord = createBaseRecord();
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -70,20 +100,10 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should reject revoked sessions with correct reason", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
+      const record: SessionRecord = createBaseRecord({
         status: SessionStatus.REVOKED,
         revocationReason: SessionReasonCode.MANUAL_LOGOUT,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -96,20 +116,10 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should reject expired sessions", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
+      const record: SessionRecord = createBaseRecord({
         status: SessionStatus.EXPIRED,
         revocationReason: SessionReasonCode.ABSOLUTE_TIMEOUT,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -122,19 +132,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should fail validation for absolute timeout", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
+      const record: SessionRecord = createBaseRecord({
         expiresAt: new Date(Date.now() - 1000), // Expired absolute
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -148,19 +148,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should fail validation for idle timeout", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
+      const record: SessionRecord = createBaseRecord({
         idleExpiresAt: new Date(Date.now() - 1000), // Expired idle
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -176,26 +166,16 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
   describe("HTTP Idempotency and Rotated Session Grace Validation", () => {
     it("should instantly reject state-changing mutations on rotated sessions", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
+      const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
-        revokedAt: new Date(), // Just rotated
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+        revokedAt: new Date(1000), // Just rotated
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         userAgent: "Mozilla",
         method: "POST", // UNSAFE Mutation!
-      });
+      }, new Date(1005)); // 5ms after revokedAt
 
       expect(result.isValid).toBe(false);
       expect(result.actionRequired).toBe("revoke_tree"); // Triggers ARD
@@ -203,52 +183,34 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should allow read-only GET requests on rotated sessions within 50ms window", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
-        revokedAt: new Date(Date.now() - 20), // 20ms ago (within 50ms)
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+        revokedAt: new Date(980), // 20ms before frozenNow (within 50ms)
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         userAgent: "Mozilla",
         method: "GET",
-      });
+      }, frozenNow);
 
       expect(result.isValid).toBe(true);
       expect(result.isWithinGracePeriod).toBe(true);
     });
 
     it("should reject GET requests on rotated sessions outside the 50ms window", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
-        revokedAt: new Date(Date.now() - 100), // 100ms ago (outside 50ms cap)
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+        revokedAt: new Date(800), // 200ms before frozenNow (outside 50ms cap)
+      });
 
       const result = evaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         userAgent: "Mozilla",
         method: "GET",
-      });
+      }, frozenNow);
 
       expect(result.isValid).toBe(false);
       expect(result.actionRequired).toBe("revoke_tree"); // Triggers ARD
@@ -258,19 +220,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
   describe("IP and User-Agent Context Binding Options", () => {
     it("should reject IP Mismatch when ipBinding level is 'hard'", () => {
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      const record: SessionRecord = createBaseRecord();
 
       const result = evaluator.evaluate(record, {
         ipAddress: "99.99.99.99", // Changed!
@@ -290,19 +240,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const softEvaluator = new SecurityPolicyEvaluator(softIpConfig);
 
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1", userAgent: "Mozilla" },
-      };
+      const record: SessionRecord = createBaseRecord();
 
       const result = softEvaluator.evaluate(record, {
         ipAddress: "99.99.99.99", // Mismatch
@@ -313,30 +251,73 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(result.isValid).toBe(true);
       expect(result.reason).toBe(SessionReasonCode.IP_MISMATCH); // Returns soft reason code for logging
     });
+
+    it("should reject Device Fingerprint Mismatch when fingerprinting level is 'hard'", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "persistent_fp_abc" },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "hacker_fp_xyz", // Mismatch!
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke");
+      expect(result.reason).toBe(SessionReasonCode.DEVICE_MISMATCH);
+    });
+
+    it("should allow Device Fingerprint Mismatch with soft warning when fingerprinting level is 'soft'", () => {
+      const softFpConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "soft" as const },
+      };
+      const softEvaluator = new SecurityPolicyEvaluator(softFpConfig);
+
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "persistent_fp_abc" },
+      });
+
+      const result = softEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "hacker_fp_xyz", // Mismatch
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+      expect(result.reason).toBe(SessionReasonCode.DEVICE_MISMATCH);
+    });
+
+    it("should ignore Device Fingerprint check if the stored fingerprint starts with 'fallback_'", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "fallback_uuid123" },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "hacker_fp_xyz", // Mismatch, but bypassed due to fallback prefix
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+    });
   });
 
   describe("CSRF Validation Enforcement", () => {
     it("should allow state-changing request if CSRF token matches", () => {
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+        // WHY: fingerprinting: "off" isolates CSRF validation. Tests that call evaluate()
+        // without a deviceFingerprint context would be blocked by Step 6B before reaching CSRF.
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1" },
-        csrfToken: "super-secret-csrf-token",
-      };
+      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -350,24 +331,11 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     it("should reject state-changing request if CSRF token is missing", () => {
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1" },
-        csrfToken: "super-secret-csrf-token",
-      };
+      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -382,24 +350,11 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     it("should reject state-changing request if CSRF token mismatches", () => {
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1" },
-        csrfToken: "super-secret-csrf-token",
-      };
+      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -414,24 +369,11 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     it("should ignore CSRF for non-state-changing GET requests even if token is missing", () => {
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, csrf: { enabled: true, mode: "double-submit" as const } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = {
-        id: "sess-1",
-        userId: "user-1",
-        tokenHash: "hash-1",
-        status: SessionStatus.ACTIVE,
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        idleExpiresAt: new Date(Date.now() + 100000),
-        roles: [],
-        scopes: [],
-        metadata: { ipAddress: "192.168.1.1" },
-        csrfToken: "super-secret-csrf-token",
-      };
+      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -504,6 +446,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
 
+      expect(createResult.success).toBe(true);
       if (!createResult.success) return;
       const oldRecordId = createResult.data.record.id;
       const lockKey = `lock:rotate:${oldRecordId}`;
@@ -538,12 +481,14 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         userId: "user-1",
         metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(createResult.success).toBe(true);
       if (!createResult.success) return;
 
       const rotateResult = await service.rotateSession({
         token: createResult.data.token,
         context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(rotateResult.success).toBe(true);
       if (!rotateResult.success) return;
 
       // The old token is now ROTATED but within the 50ms grace period.
@@ -573,6 +518,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         userId: "user-1",
         metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(createResult.success).toBe(true);
       if (!createResult.success) return;
 
       // Rotate session: Session A (old) -> Session B (new)
@@ -626,6 +572,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         userId: "user-1",
         metadata: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(createA.success).toBe(true);
       if (!createA.success) return;
 
       // Rotate A -> B
@@ -633,6 +580,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         token: createA.data.token,
         context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(rotateB.success).toBe(true);
       if (!rotateB.success) return;
 
       // Rotate B -> C
@@ -640,6 +588,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         token: rotateB.data.newToken,
         context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(rotateC.success).toBe(true);
       if (!rotateC.success) return;
 
       // Rotate C -> D
@@ -647,6 +596,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         token: rotateC.data.newToken,
         context: { ipAddress: "127.0.0.1", userAgent: "Mozilla" },
       });
+      expect(rotateD.success).toBe(true);
       if (!rotateD.success) return;
 
       // Artificially age the revokedAt timestamp of A beyond 50ms limit (e.g. 1 second ago)

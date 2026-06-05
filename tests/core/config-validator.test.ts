@@ -19,7 +19,7 @@ describe("ConfigValidator", () => {
       enforceTlsInProduction: true,
       ipBinding: "hard",
       fingerprinting: "hard",
-      csrf: { enabled: true, mode: "double-submit" },
+      csrf: { enabled: true },
     },
     limits: { maxSessionsPerUser: 3 },
     store: { provider: "memory" },

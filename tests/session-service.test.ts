@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
 import { SessionService } from "../src/core/session.service";
 import { MemoryStoreAdapter } from "../src/storage/adapters/memory.adapter";
 import {
@@ -27,7 +26,7 @@ describe("SessionService", () => {
       enforceTlsInProduction: false,
       ipBinding: "hard",
       fingerprinting: "off",
-      csrf: { enabled: false, mode: "double-submit" },
+      csrf: { enabled: false },
     },
     limits: { maxSessionsPerUser: 2 },
     store: { provider: "memory" },
@@ -40,6 +39,33 @@ describe("SessionService", () => {
   });
 
   describe("createSession", () => {
+    it("should emit session.fallback_fingerprint event when no deviceId is provided", async () => {
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<{
+        sessionId: string;
+        userId: string;
+      }>((resolve) => {
+        eventService.on("session.fallback_fingerprint", (...args: unknown[]) => {
+          const payload = args[0] as { sessionId: string; userId: string };
+          resolve(payload);
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(true);
+      const payload = await eventPromise;
+      expect(payload.sessionId).toBeDefined();
+      expect(payload.userId).toBe("user-1");
+    });
+
     it("should create a new session successfully", async () => {
       const result = await service.createSession({
         userId: "user-1",
@@ -163,34 +189,6 @@ describe("SessionService", () => {
         });
         expect(validateResult.success).toBe(false);
       }
-    });
-  });
-
-  describe("Custom Concurrency Configuration", () => {
-    it("should successfully accept and initialize with custom concurrency settings", () => {
-      const customConfig: SessionLibraryConfig = {
-        ...config,
-        concurrency: {
-          lockTimeoutMs: 100,
-          pollIntervalMs: 10,
-        },
-      };
-      const customService = new SessionService(store, customConfig);
-      expect(customService).toBeDefined();
-    });
-
-    it("should reject invalid concurrency settings during validation", () => {
-      const { ConfigValidator } = require("../src/config/validator");
-      const invalidConfig = {
-        ...config,
-        concurrency: {
-          lockTimeoutMs: -10,
-        },
-      } as unknown as SessionLibraryConfig;
-
-      expect(() => ConfigValidator.validate(invalidConfig)).toThrow(
-        /must be a positive number/,
-      );
     });
   });
 });

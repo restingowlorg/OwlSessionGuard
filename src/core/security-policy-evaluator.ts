@@ -7,6 +7,7 @@ import {
   SessionLibraryConfig,
   SecurityEvaluationContext,
   SecurityEvaluationResult,
+  FALLBACK_FP_PREFIX,
 } from "../types";
 
 /**
@@ -124,6 +125,7 @@ export class SecurityPolicyEvaluator {
       if (isStateChanging) {
         if (
           !context.csrfToken ||
+          !record.csrfToken ||
           !constantTimeCompare(context.csrfToken, record.csrfToken)
         ) {
           return {
@@ -164,25 +166,63 @@ export class SecurityPolicyEvaluator {
 
     // 6. Device/User-Agent Fingerprinting check
     const fpConfig = this.config.security.fingerprinting;
-    if (fpConfig !== "off" && record.metadata.userAgent) {
-      const userAgentMatch = record.metadata.userAgent === context.userAgent;
-      if (!userAgentMatch) {
-        if (fpConfig === "hard") {
-          return {
-            isValid: false,
-            isWithinGracePeriod: false,
-            actionRequired: "revoke",
-            reason: SessionReasonCode.DEVICE_MISMATCH,
-            message: `User-Agent mismatch/missing in strict mode (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
-          };
-        } else if (fpConfig === "soft") {
-          return {
-            isValid: true,
-            isWithinGracePeriod: false,
-            actionRequired: "none",
-            reason: SessionReasonCode.DEVICE_MISMATCH,
-            message: `Soft User-Agent mismatch/missing logged (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
-          };
+    if (fpConfig !== "off") {
+      // Step A: Validate User-Agent (legacy check)
+      if (record.metadata.userAgent) {
+        const userAgentMatch = record.metadata.userAgent === context.userAgent;
+        if (!userAgentMatch) {
+          if (fpConfig === "hard") {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "revoke",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `User-Agent mismatch/missing in strict mode (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
+            };
+          } else if (fpConfig === "soft") {
+            return {
+              isValid: true,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `Soft User-Agent mismatch/missing logged (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
+            };
+          }
+        }
+      }
+
+      // Step B: Validate Device Fingerprint (primary security boundary check)
+      // WHY: Only enforce if the stored fingerprint is persistent (not fallback).
+      // Fallback fingerprints are ephemeral UUIDs generated for cookie-less clients
+      // at session creation — they cannot be reproduced by the client on the next
+      // request, so enforcing them would cause guaranteed false-positive logouts.
+      const storedFp = record.metadata.deviceFingerprint;
+      if (storedFp && !storedFp.startsWith(FALLBACK_FP_PREFIX)) {
+        // WHY: constantTimeCompare prevents timing-attack-based brute force.
+        // Plain === short-circuits on the first differing byte, leaking information
+        // about how many leading characters an attacker has correct.
+        const fpMatch = constantTimeCompare(
+          storedFp,
+          context.deviceFingerprint ?? "",
+        );
+        if (!fpMatch) {
+          if (fpConfig === "hard") {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "revoke",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `Device fingerprint mismatch/missing in strict mode (Expected: ${storedFp}, Actual: ${context.deviceFingerprint || "None"})`,
+            };
+          } else if (fpConfig === "soft") {
+            return {
+              isValid: true,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `Soft device fingerprint mismatch/missing logged (Expected: ${storedFp}, Actual: ${context.deviceFingerprint || "None"})`,
+            };
+          }
         }
       }
     }
