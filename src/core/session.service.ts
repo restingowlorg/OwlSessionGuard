@@ -49,9 +49,9 @@ export class SessionService implements ISessionService {
    * Async functions are safe; rejections are caught by the internal try-catch.
    */
   public on(event: string, listener: (...args: unknown[]) => void): this {
-    // WHY: Detect async listeners at registration time to prevent unhandled
-    // promise rejections. EventEmitter.emit() is synchronous and cannot catch
-    // async rejections — they'd crash the process in Node 16+.
+    // WHY: Async listeners return uncaught Promises because emitEvent() wraps
+    // each listener in setImmediate() + try-catch, which only catches synchronous
+    // throws. Detect at registration time to warn developers.
     if (listener.constructor.name === "AsyncFunction") {
       console.warn(
         `[OSSEC] Event listener for '${event}' is async. ` +

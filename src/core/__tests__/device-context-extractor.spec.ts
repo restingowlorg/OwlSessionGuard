@@ -368,5 +368,53 @@ describe("DeviceContextExtractor — Unit Tests", () => {
       expect(result.deviceContext.browser).toBe(DeviceBrowser.CHROME);
       expect(result.deviceContext.type).toBe(DeviceType.DESKTOP);
     });
+
+    it("should cap deviceContext sanitization at 64 keys to prevent CPU DoS", () => {
+      const oversizedContext: Record<string, string> = {};
+      for (let i = 0; i < 65; i++) {
+        oversizedContext[`key${i}`] = `val${i}`;
+      }
+
+      const metadata = createMockMetadata({
+        deviceContext: oversizedContext as Record<
+          string,
+          string | number | boolean
+        >,
+      });
+
+      const result = DeviceContextExtractor.extract(metadata);
+
+      // 64 sanitized keys + 3 parsed keys (os, browser, type) = 67
+      expect(Object.keys(result.deviceContext).length).toBe(67);
+      expect(result.deviceContext.key0).toBe("val0");
+      expect(result.deviceContext.key63).toBe("val63");
+      // key64 should be excluded by the cap
+      expect(result.deviceContext).not.toHaveProperty("key64");
+    });
+
+    it("should retain valid deviceContext properties when another getter throws", () => {
+      const mixedObj: Record<string, string | number | boolean> = {
+        validKey: "good",
+        anotherKey: 42,
+      };
+      Object.defineProperty(mixedObj, "boom", {
+        get() {
+          throw new Error("adversarial getter throw");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+
+      const metadata = createMockMetadata({
+        deviceContext: mixedObj,
+      });
+
+      expect(() => DeviceContextExtractor.extract(metadata)).not.toThrow();
+      const result = DeviceContextExtractor.extract(metadata);
+
+      expect(result.deviceContext.validKey).toBe("good");
+      expect(result.deviceContext.anotherKey).toBe(42);
+      expect(result.deviceContext).not.toHaveProperty("boom");
+    });
   });
 });

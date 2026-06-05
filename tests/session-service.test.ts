@@ -1,4 +1,5 @@
 import { SessionService } from "../src/core/session.service";
+import { DeviceContextExtractor } from "../src/core/device-context-extractor";
 import { MemoryStoreAdapter } from "../src/storage/adapters/memory.adapter";
 import {
   SessionLibraryConfig,
@@ -38,8 +39,12 @@ describe("SessionService", () => {
     service = new SessionService(store, config);
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   describe("createSession", () => {
-    it("should emit session.fallback_fingerprint event when no deviceId is provided", async () => {
+    it("should emit session.fallback_fingerprint event when metadata has no valid deviceId", async () => {
       const eventService = new SessionService(store, {
         ...config,
         observability: { ...config.observability, emitEvents: true },
@@ -99,6 +104,66 @@ describe("SessionService", () => {
       if (!result.success) {
         expect(result.error.reason).toBe(SessionReasonCode.SECURITY_BREACH);
       }
+    });
+
+    it("should fall back to UUID fingerprint when DeviceContextExtractor throws", async () => {
+      const extractSpy = jest.spyOn(DeviceContextExtractor, "extract").mockImplementation(() => {
+        throw new Error("extractor failure");
+      });
+
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<{ userId: string; error: string }>((resolve) => {
+        eventService.on("security.extractor_failed", (payload: unknown) => {
+          resolve(payload as { userId: string; error: string });
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record.metadata.deviceFingerprint).toMatch(/^fallback_/);
+      }
+
+      const eventPayload = await eventPromise;
+      expect(eventPayload.userId).toBe("user-1");
+      expect(eventPayload.error).toBe("extractor failure");
+
+      extractSpy.mockRestore();
+    });
+
+    it("should run all session.created listeners even when one throws", async () => {
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      let secondListenerRan = false;
+      const listenerPromise = new Promise<void>((resolve) => {
+        eventService.on("session.created", () => {
+          throw new Error("first listener threw");
+        });
+        eventService.on("session.created", () => {
+          secondListenerRan = true;
+          resolve();
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(true);
+      await listenerPromise;
+      expect(secondListenerRan).toBe(true);
     });
   });
 
@@ -182,6 +247,9 @@ describe("SessionService", () => {
         });
 
         expect(revokeResult.success).toBe(true);
+        if (revokeResult.success) {
+          expect(revokeResult.data.alreadyRevoked).toBeUndefined();
+        }
 
         const validateResult = await service.validateSession({
           token: createResult.data.token,
