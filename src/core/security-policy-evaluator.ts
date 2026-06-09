@@ -1,5 +1,5 @@
 import { SessionStateMachine } from "./state-machine";
-import { constantTimeCompare } from "../infra/crypto/crypto";
+import { constantTimeCompare, fastHash } from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -18,6 +18,27 @@ export class SecurityPolicyEvaluator {
   private readonly hardCapMs = 50; // 50ms hard-capped concurrency window
 
   constructor(private readonly config: SessionLibraryConfig) {}
+
+  /**
+   * WHY: Truncated SHA-256 preserves debuggability (compare hashes) while preventing
+   * info disclosure. Raw fingerprints must never leave the secure internal log boundary.
+   */
+  private static hashFingerprint(fp: string): string {
+    return fastHash(fp).substring(0, 16);
+  }
+
+  /**
+   * WHY: Last-octet masking hides the exact host while preserving subnet-level debugging.
+   * Full IPs in error messages leak network topology to the response chain.
+   */
+  private static maskIp(ip: string): string {
+    const parts = ip.split(".");
+    if (parts.length === 4) {
+      parts[3] = "x";
+      return parts.join(".");
+    }
+    return ip;
+  }
 
   /**
    * Evaluates all security policies for a session record against the current client context.
@@ -149,16 +170,16 @@ export class SecurityPolicyEvaluator {
             isWithinGracePeriod: false,
             actionRequired: "revoke",
             reason: SessionReasonCode.IP_MISMATCH,
-            message: `IP mismatch in strict mode (Expected: ${record.metadata.ipAddress}, Actual: ${context.ipAddress})`,
+            message: `IP mismatch in strict mode (Expected: ${SecurityPolicyEvaluator.maskIp(record.metadata.ipAddress)}, Actual: ${SecurityPolicyEvaluator.maskIp(context.ipAddress)})`,
           };
         } else if (ipConfig === "soft") {
-          // Soft binding allows request but triggers event/warning
+          // WHY: Soft binding allows request but triggers event/warning via softWarning flag.
+          // Full details are emitted to the secure event boundary, not the result message.
           return {
             isValid: true,
             isWithinGracePeriod: false,
             actionRequired: "none",
-            reason: SessionReasonCode.IP_MISMATCH,
-            message: `Soft IP mismatch logged (Expected: ${record.metadata.ipAddress}, Actual: ${context.ipAddress})`,
+            softWarning: true,
           };
         }
       }
@@ -184,8 +205,7 @@ export class SecurityPolicyEvaluator {
               isValid: true,
               isWithinGracePeriod: false,
               actionRequired: "none",
-              reason: SessionReasonCode.DEVICE_MISMATCH,
-              message: `Soft User-Agent mismatch/missing logged (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
+              softWarning: true,
             };
           }
         }
@@ -212,15 +232,14 @@ export class SecurityPolicyEvaluator {
               isWithinGracePeriod: false,
               actionRequired: "revoke",
               reason: SessionReasonCode.DEVICE_MISMATCH,
-              message: `Device fingerprint mismatch/missing in strict mode (Expected: ${storedFp}, Actual: ${context.deviceFingerprint || "None"})`,
+              message: `Device fingerprint mismatch/missing in strict mode (Expected: ${SecurityPolicyEvaluator.hashFingerprint(storedFp)}, Actual: ${SecurityPolicyEvaluator.hashFingerprint(context.deviceFingerprint ?? "")})`,
             };
           } else if (fpConfig === "soft") {
             return {
               isValid: true,
               isWithinGracePeriod: false,
               actionRequired: "none",
-              reason: SessionReasonCode.DEVICE_MISMATCH,
-              message: `Soft device fingerprint mismatch/missing logged (Expected: ${storedFp}, Actual: ${context.deviceFingerprint || "None"})`,
+              softWarning: true,
             };
           }
         }

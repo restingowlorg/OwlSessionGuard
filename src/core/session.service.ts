@@ -232,11 +232,12 @@ export class SessionService implements ISessionService {
       }
 
       // Soft context binding warnings
-      if (evaluation.reason) {
+      // WHY: softWarning is set by the evaluator for soft mismatches (IP, User-Agent, fingerprint).
+      // Full details are emitted to the secure event boundary — never exposed in the result.
+      if (evaluation.softWarning) {
         this.emitSecurityRejection({
           record,
-          reason: evaluation.reason,
-          message: evaluation.message,
+          reason: SessionReasonCode.SECURITY_BREACH,
           context: evaluationContext,
         });
       }

@@ -249,7 +249,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       });
 
       expect(result.isValid).toBe(true);
-      expect(result.reason).toBe(SessionReasonCode.IP_MISMATCH); // Returns soft reason code for logging
+      expect(result.softWarning).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(result.message).toBeUndefined();
     });
 
     it("should reject Device Fingerprint Mismatch when fingerprinting level is 'hard'", () => {
@@ -288,7 +290,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       });
 
       expect(result.isValid).toBe(true);
-      expect(result.reason).toBe(SessionReasonCode.DEVICE_MISMATCH);
+      expect(result.softWarning).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(result.message).toBeUndefined();
     });
 
     it("should ignore Device Fingerprint check if the stored fingerprint starts with 'fallback_'", () => {
@@ -624,6 +628,201 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(finalD?.status).toBe(SessionStatus.REVOKED);
       
       expect(finalD?.revocationReason).toBe(SessionReasonCode.SECURITY_BREACH);
+    });
+  });
+
+  describe("Sensitive Data Redaction in Messages", () => {
+    it("should hash fingerprint in hard-mode fingerprint mismatch message", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "secret_raw_fingerprint_abc123" },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "different_fingerprint_xyz789",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.message).toBeDefined();
+      // Message must NOT contain the raw fingerprint
+      expect(result.message).not.toContain("secret_raw_fingerprint_abc123");
+      expect(result.message).not.toContain("different_fingerprint_xyz789");
+      // Message should contain truncated hashes (16 chars hex)
+      expect(result.message).toMatch(/Expected: [a-f0-9]{16}/);
+      expect(result.message).toMatch(/Actual: [a-f0-9]{16}/);
+    });
+
+    it("should mask IP in hard-mode IP mismatch message", () => {
+      const record: SessionRecord = createBaseRecord();
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "10.20.30.40",
+        userAgent: "Mozilla",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.message).toBeDefined();
+      // Message must NOT contain the raw actual IP
+      expect(result.message).not.toContain("10.20.30.40");
+      // Message should contain masked IPs (last octet replaced with x)
+      expect(result.message).toContain("192.168.1.x");
+      expect(result.message).toContain("10.20.30.x");
+    });
+
+    it("should NOT expose raw values in soft-mode IP mismatch result", () => {
+      const softIpConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, ipBinding: "soft" as const },
+      };
+      const softEvaluator = new SecurityPolicyEvaluator(softIpConfig);
+
+      const record: SessionRecord = createBaseRecord();
+
+      const result = softEvaluator.evaluate(record, {
+        ipAddress: "10.20.30.40",
+        userAgent: "Mozilla",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+      expect(result.softWarning).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(result.message).toBeUndefined();
+    });
+
+    it("should NOT expose raw values in soft-mode fingerprint mismatch result", () => {
+      const softFpConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "soft" as const },
+      };
+      const softEvaluator = new SecurityPolicyEvaluator(softFpConfig);
+
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "secret_stored_fp" },
+      });
+
+      const result = softEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "attacker_fp",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+      expect(result.softWarning).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(result.message).toBeUndefined();
+    });
+  });
+
+  describe("Adversarial Edge Cases — Redaction Helpers", () => {
+    it("should handle empty fingerprint string in hashFingerprint", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "" }, // empty
+      });
+
+      // Should not throw — empty string is falsy, bypasses fingerprint check
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "any_value",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should handle IPv6-style IP in maskIp (no masking, returned as-is)", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { ipAddress: "::1" },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "10.0.0.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      // IPv6 should pass through maskIp unchanged (not 4 octets)
+      expect(result.message).toContain("::1");
+    });
+
+    it("should handle very long fingerprint without performance degradation", () => {
+      const longFp = "a".repeat(1024);
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: longFp },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        deviceFingerprint: "b".repeat(1024),
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      // Hash should be exactly 16 chars regardless of input length
+      expect(result.message).toMatch(/Expected: [a-f0-9]{16}/);
+      expect(result.message).toMatch(/Actual: [a-f0-9]{16}/);
+    });
+
+    it("should not leak fingerprint in hard-mode message even when context has undefined fingerprint", () => {
+      const record: SessionRecord = createBaseRecord({
+        metadata: { deviceFingerprint: "persistent_real_fp" },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        // deviceFingerprint intentionally omitted (undefined)
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.message).not.toContain("persistent_real_fp");
+      expect(result.message).toMatch(/Actual: [a-f0-9]{16}/);
+    });
+
+    it("should handle very long User-Agent in hard mode without performance degradation", () => {
+      const longUA = "Mozilla/5.0 ".repeat(100); // ~1200 chars
+      const record: SessionRecord = createBaseRecord({
+        metadata: { userAgent: longUA },
+      });
+
+      const result = evaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Different-UA",
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(false);
+      // UA is public data — kept as-is in message, not hashed
+      expect(result.message).toContain(longUA);
+    });
+
+    it("should handle empty User-Agent in soft mode without throwing", () => {
+      const softFpConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "soft" as const },
+      };
+      const softEvaluator = new SecurityPolicyEvaluator(softFpConfig);
+
+      const record: SessionRecord = createBaseRecord({
+        metadata: { userAgent: "Mozilla" },
+      });
+
+      const result = softEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "", // empty UA
+        method: "GET",
+      });
+
+      expect(result.isValid).toBe(true);
+      expect(result.softWarning).toBe(true);
     });
   });
 });

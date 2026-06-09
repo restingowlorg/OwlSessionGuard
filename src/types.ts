@@ -305,4 +305,6 @@ export interface SecurityEvaluationResult {
   actionRequired?: "revoke" | "revoke_tree" | "none";
   reason?: SessionReasonCode;
   message?: string;
+  /** Signals a soft security mismatch for event emission without exposing details in the result. */
+  softWarning?: boolean;
 }
