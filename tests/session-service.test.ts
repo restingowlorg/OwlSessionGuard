@@ -53,9 +53,14 @@ describe("SessionService", () => {
       const eventPromise = new Promise<{
         sessionId: string;
         userId: string;
+        deviceContext: Record<string, string | number | boolean>;
       }>((resolve) => {
         eventService.on("session.fallback_fingerprint", (...args: unknown[]) => {
-          const payload = args[0] as { sessionId: string; userId: string };
+          const payload = args[0] as {
+            sessionId: string;
+            userId: string;
+            deviceContext: Record<string, string | number | boolean>;
+          };
           resolve(payload);
         });
       });
@@ -69,6 +74,10 @@ describe("SessionService", () => {
       const payload = await eventPromise;
       expect(payload.sessionId).toBeDefined();
       expect(payload.userId).toBe("user-1");
+      expect(payload.deviceContext).toBeDefined();
+      expect(payload.deviceContext.os).toBeDefined();
+      expect(payload.deviceContext.browser).toBeDefined();
+      expect(payload.deviceContext.type).toBeDefined();
     });
 
     it("should create a new session successfully", async () => {
@@ -116,15 +125,23 @@ describe("SessionService", () => {
         observability: { ...config.observability, emitEvents: true },
       });
 
-      const eventPromise = new Promise<{ userId: string; error: string }>((resolve) => {
+      const eventPromise = new Promise<{
+        userId: string;
+        error: string;
+        metadata: { ipAddress: string; userAgent?: string };
+      }>((resolve) => {
         eventService.on("security.extractor_failed", (payload: unknown) => {
-          resolve(payload as { userId: string; error: string });
+          resolve(payload as {
+            userId: string;
+            error: string;
+            metadata: { ipAddress: string; userAgent?: string };
+          });
         });
       });
 
       const result = await eventService.createSession({
         userId: "user-1",
-        metadata: { ipAddress: "127.0.0.1" },
+        metadata: { ipAddress: "127.0.0.1", userAgent: "TestAgent/1.0" },
       });
 
       expect(result.success).toBe(true);
@@ -135,6 +152,9 @@ describe("SessionService", () => {
       const eventPayload = await eventPromise;
       expect(eventPayload.userId).toBe("user-1");
       expect(eventPayload.error).toBe("extractor failure");
+      expect(eventPayload.metadata).toBeDefined();
+      expect(eventPayload.metadata.ipAddress).toBe("127.0.0.1");
+      expect(eventPayload.metadata.userAgent).toBe("TestAgent/1.0");
 
       extractSpy.mockRestore();
     });

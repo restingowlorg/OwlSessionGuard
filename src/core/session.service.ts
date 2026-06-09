@@ -107,6 +107,7 @@ export class SessionService implements ISessionService {
             extractorError instanceof Error
               ? extractorError.message
               : String(extractorError),
+          metadata: params.metadata,
           timestamp: now,
         });
         deviceFingerprint = `${FALLBACK_FP_PREFIX}${uuidv4()}`;
@@ -142,6 +143,7 @@ export class SessionService implements ISessionService {
         this.emitEvent("session.fallback_fingerprint", {
           sessionId: record.id,
           userId: record.userId,
+          deviceContext,
           timestamp: now,
         });
       }
