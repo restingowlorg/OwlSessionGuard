@@ -1,5 +1,13 @@
-import { SessionRecord, SessionLibraryConfig } from "../types";
-import { ISessionService } from "../interfaces";
+import {
+  SessionRecord,
+  SessionLibraryConfig,
+  SessionStatus,
+  ValidateFunction,
+  ValidateResult,
+} from "../types";
+import { buildValidateFn } from "./validate-fn";
+
+export { buildValidateFn };
 
 /** Internal symbol to prevent session spoofing via other middlewares. */
 const OSSEC_SESSION_MARKER = Symbol("ossec:session:trusted");
@@ -27,6 +35,7 @@ export interface SessionWebContext {
   getSession():
     | (SessionRecord & { [OSSEC_SESSION_MARKER]?: boolean })
     | undefined;
+  getDeviceId?(): string | undefined;
 }
 
 export class BridgeProcessor {
@@ -40,6 +49,13 @@ export class BridgeProcessor {
     enabled: boolean;
     cookieName: string;
     headerName: string;
+  };
+  // WHY: Device cookie config is separate from session cookie because deviceId
+  // is a persistent identifier that outlives individual session tokens.
+  private readonly deviceConfig: {
+    enabled: boolean;
+    cookieName: string;
+    cookieOptions: CookieOptions;
   };
 
   constructor(config: SessionLibraryConfig) {
@@ -71,24 +87,44 @@ export class BridgeProcessor {
     if (this.cookieOptions.sameSite === "none" && !this.cookieOptions.secure) {
       throw new Error("[OSSEC] SameSite=None requires Secure=true.");
     }
+
+    // WHY: Device cookie inherits secure defaults from session cookie config
+    // but has its own name and httpOnly setting. The device ID is an opaque
+    // identifier — it must not be readable by frontend JS (httpOnly: true).
+    const dc = config.device;
+    this.deviceConfig = {
+      enabled: dc?.enabled ?? false,
+      cookieName: dc?.cookie?.name || "device_id",
+      cookieOptions: {
+        httpOnly: dc?.cookie?.httpOnly ?? true,
+        secure: dc?.cookie?.secure ?? this.cookieOptions.secure,
+        sameSite: dc?.cookie?.sameSite ?? this.cookieOptions.sameSite,
+        path: dc?.cookie?.path ?? this.cookieOptions.path,
+        domain: dc?.cookie?.domain ?? this.cookieOptions.domain,
+        maxAgeSeconds: dc?.cookie?.maxAgeSeconds,
+      },
+    };
+
+    // WHY: Enforce SameSite=None requires Secure=true for device cookie,
+    // same constraint as session cookie. Prevents silent browser rejection.
+    if (
+      this.deviceConfig.enabled &&
+      this.deviceConfig.cookieOptions.sameSite === "none" &&
+      !this.deviceConfig.cookieOptions.secure
+    ) {
+      throw new Error(
+        "[OSSEC] Device cookie: SameSite=None requires Secure=true.",
+      );
+    }
+  }
+
+  public get deviceCookieName(): string | undefined {
+    return this.deviceConfig.enabled ? this.deviceConfig.cookieName : undefined;
   }
 
   public async handle(
     context: SessionWebContext,
-    validateFn: (
-      token: string,
-      clientInfo: {
-        ipAddress: string;
-        userAgent?: string;
-        method: string;
-        csrfToken?: string;
-      },
-    ) => Promise<{
-      success: boolean;
-      data?: SessionRecord;
-      error?: { message: string; httpCode: number };
-      newToken?: string;
-    }>,
+    validateFn: ValidateFunction,
   ): Promise<boolean> {
     const existing = context.getSession();
     if (existing && existing[OSSEC_SESSION_MARKER]) return true;
@@ -107,41 +143,106 @@ export class BridgeProcessor {
       csrfToken,
     };
 
-    const result = await validateFn(extraction.token, clientInfo);
-
-    if (!result.success) {
-      if (
-        extraction.source === "cookie" &&
-        result.error &&
-        result.error.httpCode < 500
-      ) {
-        context.clearCookie(this.cookieName, this.cookieOptions);
-      }
+    let result: ValidateResult;
+    try {
+      result = await validateFn(extraction.token, clientInfo);
+    } catch {
+      // WHY: If the consumer's validateFn throws synchronously or rejects,
+      // treat it as a validation failure — never crash the request pipeline.
       return false;
     }
 
-    if (result.data) {
-      const record = result.data as SessionRecord & {
-        [OSSEC_SESSION_MARKER]?: boolean;
-      };
-      record[OSSEC_SESSION_MARKER] = true;
-      context.setSession(record);
+    if (!result.success) {
+      return this.handleFailure(context, extraction.source, result);
+    }
 
-      if (result.newToken) {
-        if (this.transportMode !== "header") {
-          context.setCookie(
-            this.cookieName,
-            result.newToken,
-            this.cookieOptions,
-          );
-        }
-        if (this.transportMode !== "cookie") {
-          context.setHeader(this.responseHeaderName, result.newToken);
-        }
+    return this.handleSuccess(context, result);
+  }
+
+  private handleFailure(
+    context: SessionWebContext,
+    source: "header" | "cookie",
+    result: ValidateResult,
+  ): boolean {
+    // WHY: Cookie clear failures are non-critical — the session is already
+    // revoked server-side. The cookie in the browser is useless regardless.
+    if (source === "cookie" && result.error && result.error.httpCode < 500) {
+      try {
+        context.clearCookie(this.cookieName, this.cookieOptions);
+      } catch {
+        // Non-critical: session revoked server-side
       }
     }
 
+    // WHY: On validation failure, clear the CSRF cookie if the service signals it.
+    // This prevents stale CSRF tokens from persisting after session revocation.
+    if (result.clearCsrfToken) {
+      this.clearCsrfCookie(context);
+    }
+
+    return false;
+  }
+
+  private handleSuccess(
+    context: SessionWebContext,
+    result: ValidateResult,
+  ): boolean {
+    if (!result.data) {
+      // WHY: success:true with no data is an acknowledgment (e.g. revocation).
+      // The request should not proceed as authenticated — no session to attach.
+      return false;
+    }
+
+    const record = result.data as SessionRecord & {
+      [OSSEC_SESSION_MARKER]?: boolean;
+    };
+
+    // WHY: Revoked sessions must not proceed as authenticated.
+    // The service returns success:true for revocation acknowledgments,
+    // but the bridge must treat them as non-authenticated.
+    if (record.status === SessionStatus.REVOKED) {
+      this.applyOperationResult(context, result);
+      return false;
+    }
+
+    record[OSSEC_SESSION_MARKER] = true;
+    context.setSession(record);
+
+    if (result.newToken) {
+      this.applyTokenRotation(context, result.newToken);
+    }
+
+    this.applyOperationResult(context, result);
+
     return true;
+  }
+
+  // WHY: Session cookie write is critical — if it fails, the user cannot
+  // authenticate. The error must propagate so the consumer can return a 500.
+  private applyTokenRotation(
+    context: SessionWebContext,
+    newToken: string,
+  ): void {
+    if (this.transportMode !== "header") {
+      context.setCookie(this.cookieName, newToken, this.cookieOptions);
+    }
+    if (this.transportMode !== "cookie") {
+      context.setHeader(this.responseHeaderName, newToken);
+    }
+  }
+
+  // WHY: Centralizes CSRF and device cookie propagation from service results.
+  // Eliminates duplication between success and failure paths.
+  private applyOperationResult(
+    context: SessionWebContext,
+    result: ValidateResult,
+  ): void {
+    if (result.newCsrfToken) {
+      this.writeCsrfCookie(context, result.newCsrfToken);
+    }
+    if (result.clearCsrfToken) {
+      this.clearCsrfCookie(context);
+    }
   }
 
   private extractToken(
@@ -151,7 +252,6 @@ export class BridgeProcessor {
       const val = context.getHeader(this.headerName);
       if (val) {
         if (this.headerScheme) {
-          // Optimized: Only lowercase the prefix portion, avoid full string copy
           const schemeLen = this.headerScheme.length;
           if (
             val.length > schemeLen &&
@@ -185,10 +285,16 @@ export class BridgeProcessor {
 
   public clearSessionCookie(context: SessionWebContext) {
     if (this.transportMode !== "header") {
-      context.clearCookie(this.cookieName, this.cookieOptions);
+      try {
+        context.clearCookie(this.cookieName, this.cookieOptions);
+      } catch {
+        // Non-critical: session revoked server-side
+      }
     }
   }
 
+  // WHY: CSRF cookie write is critical — without it, CSRF protection is broken.
+  // The error must propagate so the consumer can return a 500.
   public writeCsrfCookie(context: SessionWebContext, csrfToken: string) {
     if (this.csrfConfig.enabled) {
       context.setCookie(this.csrfConfig.cookieName, csrfToken, {
@@ -200,48 +306,50 @@ export class BridgeProcessor {
 
   public clearCsrfCookie(context: SessionWebContext) {
     if (this.csrfConfig.enabled) {
-      context.clearCookie(this.csrfConfig.cookieName, {
-        ...this.cookieOptions,
-        httpOnly: false,
-      });
+      try {
+        context.clearCookie(this.csrfConfig.cookieName, {
+          ...this.cookieOptions,
+          httpOnly: false,
+        });
+      } catch {
+        // Non-critical: session revoked server-side
+      }
     }
   }
-}
 
-export function buildValidateFn(service: ISessionService) {
-  return async (
-    token: string,
-    clientInfo: {
-      ipAddress: string;
-      userAgent?: string;
-      method: string;
-      csrfToken?: string;
-    },
-  ) => {
-    const result = await service.validateSession({
-      token,
-      csrfToken: clientInfo.csrfToken,
-      context: {
-        ipAddress: clientInfo.ipAddress,
-        userAgent: clientInfo.userAgent,
-        method: clientInfo.method,
-      },
-    });
+  // WHY: Writes a persistent device identifier cookie. This is the standard
+  // entry point for consumers — keeps cookie name and options centralized
+  // in the bridge so framework middlewares don't duplicate config logic.
+  public writeDeviceIdCookie(context: SessionWebContext, deviceId: string) {
+    if (!this.deviceConfig.enabled) return;
 
-    if (result && result.success) {
-      return {
-        success: true as const,
-        data: result.data,
-        newToken: result.newToken,
-      };
+    // WHY: Reject empty or oversized deviceId at the boundary to prevent
+    // silent cookie collision or denial-of-service via cookie size limits.
+    // Max 512 matches DeviceContextExtractor validation.
+    if (!deviceId || deviceId.length > 512) return;
+
+    try {
+      context.setCookie(
+        this.deviceConfig.cookieName,
+        deviceId,
+        this.deviceConfig.cookieOptions,
+      );
+    } catch {
+      // Non-critical: device tracking is nice-to-have, not essential for auth.
     }
+  }
 
-    return {
-      success: false as const,
-      error: {
-        message: result.error?.message || "Invalid session",
-        httpCode: result.httpCode || 401,
-      },
-    };
-  };
+  // WHY: Clears the device identifier cookie on logout or session tree revocation.
+  public clearDeviceIdCookie(context: SessionWebContext) {
+    if (this.deviceConfig.enabled) {
+      try {
+        context.clearCookie(
+          this.deviceConfig.cookieName,
+          this.deviceConfig.cookieOptions,
+        );
+      } catch {
+        // Non-critical: session revoked server-side
+      }
+    }
+  }
 }

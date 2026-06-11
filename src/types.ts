@@ -248,6 +248,19 @@ export interface SessionLibraryConfig {
     };
   };
 
+  device?: {
+    enabled: boolean;
+    cookie?: {
+      name?: string;
+      httpOnly?: boolean;
+      secure?: boolean;
+      sameSite?: "lax" | "strict" | "none";
+      path?: string;
+      domain?: string;
+      maxAgeSeconds?: number;
+    };
+  };
+
   limits: {
     maxSessionsPerUser: number;
     maxSessionsPerRole?: Record<string, number>;
@@ -308,3 +321,24 @@ export interface SecurityEvaluationResult {
   /** Signals a soft security mismatch for event emission without exposing details in the result. */
   softWarning?: boolean;
 }
+
+/** Result shape returned by a validateFn to BridgeProcessor.handle(). */
+export interface ValidateResult {
+  success: boolean;
+  data?: SessionRecord;
+  error?: { message: string; httpCode: number };
+  newToken?: string;
+  newCsrfToken?: string;
+  clearCsrfToken?: boolean;
+}
+
+/** Callback signature for validateFn passed to BridgeProcessor.handle(). */
+export type ValidateFunction = (
+  token: string,
+  clientInfo: {
+    ipAddress: string;
+    userAgent?: string;
+    method: string;
+    csrfToken?: string;
+  },
+) => Promise<ValidateResult>;

@@ -28,6 +28,7 @@ class ExpressSessionContext implements SessionWebContext {
     private readonly req: Request,
     private readonly res: Response,
     private readonly shouldSignSessionCookie: boolean,
+    private readonly deviceCookieName?: string,
   ) {}
 
   getMethod(): string {
@@ -86,6 +87,14 @@ class ExpressSessionContext implements SessionWebContext {
   getSession(): SessionRecord | undefined {
     return this.req.session;
   }
+
+  getDeviceId(): string | undefined {
+    if (!this.deviceCookieName) return undefined;
+    return (
+      this.req.signedCookies?.[this.deviceCookieName] ??
+      this.req.cookies?.[this.deviceCookieName]
+    );
+  }
 }
 
 export const createExpressMiddleware = (
@@ -103,7 +112,12 @@ export const createExpressMiddleware = (
     try {
       const shouldSignSessionCookie = config.transport.cookie?.signed ?? false;
       await processor.handle(
-        new ExpressSessionContext(req, res, shouldSignSessionCookie),
+        new ExpressSessionContext(
+          req,
+          res,
+          shouldSignSessionCookie,
+          processor.deviceCookieName,
+        ),
         validateFn,
       );
       next();

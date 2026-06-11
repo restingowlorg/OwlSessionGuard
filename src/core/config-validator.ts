@@ -18,6 +18,7 @@ export class ConfigValidator {
     this.validateExpiration(config);
     this.validateStore(config);
     this.validateConcurrency(config);
+    this.validateDeviceConfig(config);
 
     if (config.env === "production") {
       this.validateProductionConstraints(config);
@@ -95,6 +96,32 @@ export class ConfigValidator {
       throw new FatalSecurityError(
         "CONFIGURATION ERROR: 'concurrency.pollIntervalMs' must be a positive number.\n" +
           `[REMEDIATION]: Set 'config.concurrency.pollIntervalMs' to a value greater than 0 (received: ${concurrency.pollIntervalMs}).`,
+      );
+    }
+  }
+
+  private static validateDeviceConfig(config: SessionLibraryConfig): void {
+    const { device } = config;
+    if (!device || !device.enabled) return;
+
+    // WHY: When device identification is enabled, a cookie name must be
+    // explicitly provided to avoid silent collision with other cookies.
+    if (device.cookie?.name !== undefined && device.cookie.name.trim() === "") {
+      throw new FatalSecurityError(
+        "CONFIGURATION ERROR: 'device.cookie.name' must be a non-empty string when device identification is enabled.\n" +
+          "[REMEDIATION]: Set 'config.device.cookie.name' to a valid cookie name (e.g. 'device_id').",
+      );
+    }
+
+    // WHY: Enforce SameSite=None requires Secure=true for device cookie,
+    // same constraint as session cookie in production. Prevents silent
+    // browser rejection of the device cookie.
+    if (device.cookie?.sameSite === "none" && device.cookie?.secure !== true) {
+      throw new FatalSecurityError(
+        "INSECURE CONFIGURATION DETECTED: \n" +
+          "Device cookie has 'sameSite: none' but 'secure' is not set to true.\n" +
+          "Modern browsers will reject this cookie entirely.\n" +
+          "[REMEDIATION]: Set 'device.cookie.secure' to true when using 'device.cookie.sameSite: none'.",
       );
     }
   }

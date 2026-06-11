@@ -49,6 +49,7 @@ class NestSessionContext implements SessionWebContext {
     private readonly req: SessionRequest,
     private readonly res: SessionResponse,
     private readonly shouldSignSessionCookie: boolean,
+    private readonly deviceCookieName?: string,
   ) {}
 
   getMethod(): string {
@@ -107,6 +108,14 @@ class NestSessionContext implements SessionWebContext {
   getSession(): SessionRecord | undefined {
     return this.req.session;
   }
+
+  getDeviceId(): string | undefined {
+    if (!this.deviceCookieName) return undefined;
+    return (
+      this.req.signedCookies?.[this.deviceCookieName] ??
+      this.req.cookies?.[this.deviceCookieName]
+    );
+  }
 }
 
 export const ROLES_KEY = "ossec:roles";
@@ -145,7 +154,12 @@ export class SessionGuard implements CanActivate {
       this.config.transport.cookie?.signed ?? false;
 
     const isValid = await this.processor.handle(
-      new NestSessionContext(req, res, shouldSignSessionCookie),
+      new NestSessionContext(
+        req,
+        res,
+        shouldSignSessionCookie,
+        this.processor.deviceCookieName,
+      ),
       this.validateFn,
     );
 
@@ -205,6 +219,7 @@ export class SessionInterceptor implements NestInterceptor {
           http.getRequest<SessionRequest>(),
           http.getResponse<SessionResponse>(),
           shouldSignSessionCookie,
+          this.processor.deviceCookieName,
         ),
         this.validateFn,
       );
