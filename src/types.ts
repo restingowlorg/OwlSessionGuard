@@ -36,13 +36,62 @@ export enum SessionReasonCode {
 }
 
 /**
- * Contextual metadata for a session, used for binding and fingerprinting.
+ * Strictly typed enums for Device Context to prevent magic string typos.
+ */
+export enum DeviceOS {
+  WINDOWS = "Windows",
+  MAC_OS = "Mac OS",
+  LINUX = "Linux",
+  IOS = "iOS",
+  ANDROID = "Android",
+  UNKNOWN = "Unknown",
+}
+
+export enum DeviceBrowser {
+  CHROME = "Chrome",
+  FIREFOX = "Firefox",
+  SAFARI = "Safari",
+  EDGE = "Edge",
+  OPERA = "Opera",
+  UNKNOWN = "Unknown",
+}
+
+export enum DeviceType {
+  DESKTOP = "Desktop",
+  MOBILE = "Mobile",
+  TABLET = "Tablet",
+  UNKNOWN = "Unknown",
+}
+
+/**
+ * Consumer-supplied session metadata. The `deviceFingerprint` is intentionally
+ * absent here because it is computed internally by DeviceContextExtractor and
+ * stored on the SessionRecord. Allowing consumers to write it directly would
+ * break the API contract and open a spoofing vector.
  */
 export interface SessionMetadata {
   ipAddress: string;
   userAgent?: string;
-  deviceFingerprint?: string;
+  deviceId?: string; // WHY: Persistent cookie-based device identifier (OWASP Gold Standard).
   deviceContext?: Record<string, string | number | boolean>;
+}
+
+/**
+ * WHY: This prefix is defined as a shared constant — not a magic string — because
+ * both DeviceContextExtractor (writer) and SecurityPolicyEvaluator (reader) must
+ * agree on the same boundary marker. A mismatch would cause a silent global
+ * logout of all fallback-fingerprinted sessions with no compiler warning.
+ */
+export const FALLBACK_FP_PREFIX = "fallback_" as const;
+
+/**
+ * The resolved device context attached to a stored session after extraction.
+ * Separated from SessionMetadata to enforce the read/write boundary:
+ * consumers write SessionMetadata, the library writes ResolvedDeviceContext.
+ */
+export interface ResolvedDeviceContext {
+  deviceFingerprint: string;
+  deviceContext: Record<string, string | number | boolean>;
 }
 
 /**
@@ -65,7 +114,10 @@ export interface SessionRecord {
   idleExpiresAt: Date;
 
   // Security Binding
-  metadata: SessionMetadata;
+  // WHY: Non-partial — every record emitted by SessionService.createSession() will
+  // always have deviceFingerprint and deviceContext set by DeviceContextExtractor.
+  // Test fixtures that do not test fingerprinting must use createBaseRecord() helper.
+  metadata: SessionMetadata & ResolvedDeviceContext;
   csrfToken?: string; // State-bound double submit CSRF token
 
   // Revocation
@@ -108,6 +160,7 @@ export type SessionOpResult<T> =
 export interface SessionSuccess {
   acknowledged: boolean;
   timestamp: Date;
+  alreadyRevoked?: boolean;
 }
 
 /**
@@ -123,12 +176,21 @@ export interface CreateSessionParams {
 export interface ValidateSessionParams {
   token: string;
   csrfToken?: string; // Optional client-provided CSRF token for validation
-  context: SessionMetadata & { method?: string };
+  context: SessionMetadata & {
+    method?: string;
+    // WHY: deviceFingerprint is only accepted here (read/verify path), not on
+    // CreateSessionParams (write path). On creation, the library generates it.
+    // On validation, the consumer supplies the stored cookie value for comparison.
+    deviceFingerprint?: string;
+  };
 }
 
 export interface RotateSessionParams {
   token: string;
-  context: SessionMetadata & { method?: string };
+  context: SessionMetadata & {
+    method?: string;
+    deviceFingerprint?: string; // Same rationale as ValidateSessionParams
+  };
   reason?: SessionReasonCode;
 }
 
@@ -183,6 +245,19 @@ export interface SessionLibraryConfig {
       enabled: boolean;
       cookieName?: string;
       headerName?: string;
+    };
+  };
+
+  device?: {
+    enabled: boolean;
+    cookie?: {
+      name?: string;
+      httpOnly?: boolean;
+      secure?: boolean;
+      sameSite?: "lax" | "strict" | "none";
+      path?: string;
+      domain?: string;
+      maxAgeSeconds?: number;
     };
   };
 
@@ -243,6 +318,8 @@ export interface SecurityEvaluationResult {
   actionRequired?: "revoke" | "revoke_tree" | "none";
   reason?: SessionReasonCode;
   message?: string;
+  /** Signals a soft security mismatch for event emission without exposing details in the result. */
+  softWarning?: boolean;
 }
 
 /**
@@ -278,3 +355,24 @@ export interface SessionListResult {
   total: number;
   nextCursor: string | null;
 }
+
+/** Result shape returned by a validateFn to BridgeProcessor.handle(). */
+export interface ValidateResult {
+  success: boolean;
+  data?: SessionRecord;
+  error?: { message: string; httpCode: number };
+  newToken?: string;
+  newCsrfToken?: string;
+  clearCsrfToken?: boolean;
+}
+
+/** Callback signature for validateFn passed to BridgeProcessor.handle(). */
+export type ValidateFunction = (
+  token: string,
+  clientInfo: {
+    ipAddress: string;
+    userAgent?: string;
+    method: string;
+    csrfToken?: string;
+  },
+) => Promise<ValidateResult>;

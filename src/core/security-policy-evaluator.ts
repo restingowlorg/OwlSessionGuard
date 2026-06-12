@@ -1,5 +1,5 @@
 import { SessionStateMachine } from "./state-machine";
-import { constantTimeCompare } from "../infra/crypto/crypto";
+import { constantTimeCompare, fastHash } from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -7,6 +7,7 @@ import {
   SessionLibraryConfig,
   SecurityEvaluationContext,
   SecurityEvaluationResult,
+  FALLBACK_FP_PREFIX,
 } from "../types";
 
 /**
@@ -17,6 +18,27 @@ export class SecurityPolicyEvaluator {
   private readonly hardCapMs = 50; // 50ms hard-capped concurrency window
 
   constructor(private readonly config: SessionLibraryConfig) {}
+
+  /**
+   * WHY: Truncated SHA-256 preserves debuggability (compare hashes) while preventing
+   * info disclosure. Raw fingerprints must never leave the secure internal log boundary.
+   */
+  private static hashFingerprint(fp: string): string {
+    return fastHash(fp).substring(0, 16);
+  }
+
+  /**
+   * WHY: Last-octet masking hides the exact host while preserving subnet-level debugging.
+   * Full IPs in error messages leak network topology to the response chain.
+   */
+  private static maskIp(ip: string): string {
+    const parts = ip.split(".");
+    if (parts.length === 4) {
+      parts[3] = "x";
+      return parts.join(".");
+    }
+    return ip;
+  }
 
   /**
    * Evaluates all security policies for a session record against the current client context.
@@ -124,6 +146,7 @@ export class SecurityPolicyEvaluator {
       if (isStateChanging) {
         if (
           !context.csrfToken ||
+          !record.csrfToken ||
           !constantTimeCompare(context.csrfToken, record.csrfToken)
         ) {
           return {
@@ -147,16 +170,16 @@ export class SecurityPolicyEvaluator {
             isWithinGracePeriod: false,
             actionRequired: "revoke",
             reason: SessionReasonCode.IP_MISMATCH,
-            message: `IP mismatch in strict mode (Expected: ${record.metadata.ipAddress}, Actual: ${context.ipAddress})`,
+            message: `IP mismatch in strict mode (Expected: ${SecurityPolicyEvaluator.maskIp(record.metadata.ipAddress)}, Actual: ${SecurityPolicyEvaluator.maskIp(context.ipAddress)})`,
           };
         } else if (ipConfig === "soft") {
-          // Soft binding allows request but triggers event/warning
+          // WHY: Soft binding allows request but triggers event/warning via softWarning flag.
+          // Full details are emitted to the secure event boundary, not the result message.
           return {
             isValid: true,
             isWithinGracePeriod: false,
             actionRequired: "none",
-            reason: SessionReasonCode.IP_MISMATCH,
-            message: `Soft IP mismatch logged (Expected: ${record.metadata.ipAddress}, Actual: ${context.ipAddress})`,
+            softWarning: true,
           };
         }
       }
@@ -164,25 +187,61 @@ export class SecurityPolicyEvaluator {
 
     // 6. Device/User-Agent Fingerprinting check
     const fpConfig = this.config.security.fingerprinting;
-    if (fpConfig !== "off" && record.metadata.userAgent) {
-      const userAgentMatch = record.metadata.userAgent === context.userAgent;
-      if (!userAgentMatch) {
-        if (fpConfig === "hard") {
-          return {
-            isValid: false,
-            isWithinGracePeriod: false,
-            actionRequired: "revoke",
-            reason: SessionReasonCode.DEVICE_MISMATCH,
-            message: `User-Agent mismatch/missing in strict mode (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
-          };
-        } else if (fpConfig === "soft") {
-          return {
-            isValid: true,
-            isWithinGracePeriod: false,
-            actionRequired: "none",
-            reason: SessionReasonCode.DEVICE_MISMATCH,
-            message: `Soft User-Agent mismatch/missing logged (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
-          };
+    if (fpConfig !== "off") {
+      // Step A: Validate User-Agent (legacy check)
+      if (record.metadata.userAgent) {
+        const userAgentMatch = record.metadata.userAgent === context.userAgent;
+        if (!userAgentMatch) {
+          if (fpConfig === "hard") {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "revoke",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `User-Agent mismatch/missing in strict mode (Expected: ${record.metadata.userAgent}, Actual: ${context.userAgent || "None"})`,
+            };
+          } else if (fpConfig === "soft") {
+            return {
+              isValid: true,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              softWarning: true,
+            };
+          }
+        }
+      }
+
+      // Step B: Validate Device Fingerprint (primary security boundary check)
+      // WHY: Only enforce if the stored fingerprint is persistent (not fallback).
+      // Fallback fingerprints are ephemeral UUIDs generated for cookie-less clients
+      // at session creation — they cannot be reproduced by the client on the next
+      // request, so enforcing them would cause guaranteed false-positive logouts.
+      const storedFp = record.metadata.deviceFingerprint;
+      if (storedFp && !storedFp.startsWith(FALLBACK_FP_PREFIX)) {
+        // WHY: constantTimeCompare prevents timing-attack-based brute force.
+        // Plain === short-circuits on the first differing byte, leaking information
+        // about how many leading characters an attacker has correct.
+        const fpMatch = constantTimeCompare(
+          storedFp,
+          context.deviceFingerprint ?? "",
+        );
+        if (!fpMatch) {
+          if (fpConfig === "hard") {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "revoke",
+              reason: SessionReasonCode.DEVICE_MISMATCH,
+              message: `Device fingerprint mismatch/missing in strict mode (Expected: ${SecurityPolicyEvaluator.hashFingerprint(storedFp)}, Actual: ${SecurityPolicyEvaluator.hashFingerprint(context.deviceFingerprint ?? "")})`,
+            };
+          } else if (fpConfig === "soft") {
+            return {
+              isValid: true,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              softWarning: true,
+            };
+          }
         }
       }
     }

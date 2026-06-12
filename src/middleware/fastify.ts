@@ -49,6 +49,7 @@ class FastifySessionContext implements SessionWebContext {
   constructor(
     private readonly request: FastifyRequest,
     private readonly reply: FastifyReply,
+    private readonly deviceCookieName?: string,
   ) {}
 
   getMethod(): string {
@@ -106,6 +107,11 @@ class FastifySessionContext implements SessionWebContext {
   getSession(): SessionRecord | undefined {
     return this.request.session || undefined;
   }
+
+  getDeviceId(): string | undefined {
+    if (!this.deviceCookieName) return undefined;
+    return this.request.cookies?.[this.deviceCookieName];
+  }
 }
 
 export const fastifySessionPlugin: FastifyPluginAsync<{
@@ -121,7 +127,7 @@ export const fastifySessionPlugin: FastifyPluginAsync<{
     "onRequest",
     async (request: FastifyRequest, reply: FastifyReply) => {
       await processor.handle(
-        new FastifySessionContext(request, reply),
+        new FastifySessionContext(request, reply, processor.deviceCookieName),
         validateFn,
       );
     },

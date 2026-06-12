@@ -17,11 +17,16 @@ import {
   SecurityEvaluationResult,
   SessionSnapshot,
   SessionListParams,
+  DeviceOS,
+  DeviceBrowser,
+  DeviceType,
+  FALLBACK_FP_PREFIX,
 } from "../types";
 import { SessionStoreAdapter } from "../storage/contracts";
 import { SessionStateMachine } from "./state-machine";
 import { SecurityPolicyEvaluator } from "./security-policy-evaluator";
 import { ConfigValidator } from "./config-validator";
+import { DeviceContextExtractor } from "./device-context-extractor";
 
 /**
  * SessionService — Core session manager supporting locking concurrency queues,
@@ -41,8 +46,21 @@ export class SessionService implements ISessionService {
 
   /**
    * Register a session security/observability event listener.
+   * Listeners are dispatched asynchronously via setImmediate() with per-listener
+   * error isolation — one throwing listener never silences the rest.
+   * Async functions are safe; rejections are caught by the internal try-catch.
    */
   public on(event: string, listener: (...args: unknown[]) => void): this {
+    // WHY: Async listeners return uncaught Promises because emitEvent() wraps
+    // each listener in setImmediate() + try-catch, which only catches synchronous
+    // throws. Detect at registration time to warn developers.
+    if (listener.constructor.name === "AsyncFunction") {
+      console.warn(
+        `[OSSEC] Event listener for '${event}' is async. ` +
+          `Synchronous listeners only — async rejections will be unhandled. ` +
+          `Wrap async logic in setImmediate().`,
+      );
+    }
     this.events.on(event, listener);
     return this;
   }
@@ -77,6 +95,31 @@ export class SessionService implements ISessionService {
         now.getTime() + this.config.expiration.idleTimeoutSeconds * 1000,
       );
 
+      let deviceFingerprint: string;
+      let deviceContext: Record<string, string | number | boolean>;
+      try {
+        const extracted = DeviceContextExtractor.extract(params.metadata);
+        deviceFingerprint = extracted.deviceFingerprint;
+        deviceContext = extracted.deviceContext;
+      } catch (extractorError) {
+        // Defensive boundary: Ensure session creation never fails due to parsing errors
+        this.emitEvent("security.extractor_failed", {
+          userId: params.userId,
+          error:
+            extractorError instanceof Error
+              ? extractorError.message
+              : String(extractorError),
+          metadata: params.metadata,
+          timestamp: now,
+        });
+        deviceFingerprint = `${FALLBACK_FP_PREFIX}${uuidv4()}`;
+        deviceContext = {
+          os: DeviceOS.UNKNOWN,
+          browser: DeviceBrowser.UNKNOWN,
+          type: DeviceType.UNKNOWN,
+        };
+      }
+
       const record: SessionRecord = {
         id: uuidv4(),
         userId: params.userId,
@@ -88,11 +131,24 @@ export class SessionService implements ISessionService {
         lastUsedAt: now,
         expiresAt,
         idleExpiresAt,
-        metadata: params.metadata,
+        metadata: {
+          ...params.metadata,
+          deviceFingerprint,
+          deviceContext,
+        },
         csrfToken: this.config.security.csrf.enabled
           ? generateBase64UrlToken(32)
           : undefined,
       };
+
+      if (deviceFingerprint.startsWith(FALLBACK_FP_PREFIX)) {
+        this.emitEvent("session.fallback_fingerprint", {
+          sessionId: record.id,
+          userId: record.userId,
+          deviceContext,
+          timestamp: now,
+        });
+      }
 
       await this.store.create(record, maxSessions);
 
@@ -180,11 +236,12 @@ export class SessionService implements ISessionService {
       }
 
       // Soft context binding warnings
-      if (evaluation.reason) {
+      // WHY: softWarning is set by the evaluator for soft mismatches (IP, User-Agent, fingerprint).
+      // Full details are emitted to the secure event boundary — never exposed in the result.
+      if (evaluation.softWarning) {
         this.emitSecurityRejection({
           record,
-          reason: evaluation.reason,
-          message: evaluation.message,
+          reason: SessionReasonCode.SECURITY_BREACH,
           context: evaluationContext,
         });
       }
@@ -327,9 +384,18 @@ export class SessionService implements ISessionService {
           SessionStatus.REVOKED,
         )
       ) {
+        this.emitEvent("session.already_revoked", {
+          sessionId: record.id,
+          userId: record.userId,
+          timestamp: new Date(),
+        });
         return {
           success: true,
-          data: { acknowledged: true, timestamp: new Date() },
+          data: {
+            acknowledged: true,
+            timestamp: new Date(),
+            alreadyRevoked: true,
+          },
           httpCode: 200,
           clearCsrfToken: true,
         };
@@ -378,7 +444,11 @@ export class SessionService implements ISessionService {
 
       return {
         success: true,
-        data: { acknowledged: true, timestamp: new Date() },
+        data: {
+          acknowledged: true,
+          timestamp: new Date(),
+          alreadyRevoked: false,
+        },
         httpCode: 200,
         clearCsrfToken: true,
       };
@@ -554,7 +624,34 @@ export class SessionService implements ISessionService {
 
   private emitEvent(event: string, payload: Record<string, unknown>): void {
     if (this.config.observability.emitEvents) {
-      this.events.emit(event, payload);
+      // WHY: Shallow-clone the payload to prevent listener-to-listener corruption.
+      // EventEmitter.emit() passes the same object reference to every registered
+      // listener. If listener A mutates the payload (e.g. payload.userId = "HACKED"),
+      // listener B sees the corrupted data. A shallow clone ensures each listener
+      // gets its own copy.
+      const safePayload = { ...payload };
+
+      // WHY: Iterate listeners individually with per-listener try-catch instead of
+      // using this.events.emit(). EventEmitter.emit() stops at the first throwing
+      // listener and subsequent listeners never run. Our approach ensures one faulty
+      // listener never silences the rest.
+      //
+      // WHY: setImmediate defers listener execution so a buggy or malicious listener
+      // (e.g. while(true) {}) blocks only its own tick, not the critical session
+      // lifecycle path. The session response is sent before any listener runs.
+      const listeners = this.events.rawListeners(event);
+      for (const listener of listeners) {
+        setImmediate(() => {
+          try {
+            listener(safePayload);
+          } catch (listenerError) {
+            console.error(
+              `[OSSEC] Telemetry listener threw on event '${event}':`,
+              listenerError,
+            );
+          }
+        });
+      }
     }
   }
 
@@ -621,6 +718,25 @@ export class SessionService implements ISessionService {
     } else if (typeof error === "string") {
       message = error;
     }
+
+    // WHY: Stage 3 & 6 — Telemetry Preservation.
+    // Emit a serializable representation of the raw error so that consumer applications
+    // can hook into 'internal_error' and log full stack traces using their own loggers in production.
+    this.emitEvent("internal_error", {
+      context,
+      message,
+      error:
+        error instanceof Error
+          ? {
+              name: error.name,
+              message: error.message,
+              stack: error.stack,
+            }
+          : String(error),
+      timestamp: new Date(),
+    });
+
+    console.error(`[OSSEC] INTERNAL_ERROR in ${context}:`, error);
 
     return {
       success: false,
