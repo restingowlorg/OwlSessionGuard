@@ -7,6 +7,8 @@ import {
   SessionRecord,
   SessionReasonCode,
   SessionSuccess,
+  SessionSnapshot,
+  SessionListParams,
 } from "./types";
 
 /**
@@ -54,6 +56,21 @@ export interface ISessionService {
     userId: string,
     reason: SessionReasonCode,
   ): Promise<SessionOpResult<SessionSuccess>>;
+
+  /**
+   * List sessions for a user with pagination.
+   * Returns safe snapshots — no token hashes, no CSRF tokens, no session tree linkage.
+   */
+  listUserSessions(
+    userId: string,
+    params?: SessionListParams,
+  ): Promise<
+    SessionOpResult<{
+      sessions: SessionSnapshot[];
+      total: number;
+      nextCursor: string | null;
+    }>
+  >;
 }
 
 export interface RedisStoreOptions {

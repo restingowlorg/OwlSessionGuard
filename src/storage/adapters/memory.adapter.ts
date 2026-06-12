@@ -1,5 +1,10 @@
 import { SessionStoreAdapter } from "../contracts";
-import { SessionRecord, SessionStatus } from "../../types";
+import {
+  SessionRecord,
+  SessionStatus,
+  SessionListParams,
+  SessionListResult,
+} from "../../types";
 
 /**
  * MemoryStoreAdapter — Simple in-memory storage for development and testing.
@@ -107,6 +112,53 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       }
     }
     return count;
+  }
+
+  async findAllForUser(
+    userId: string,
+    params?: SessionListParams,
+  ): Promise<SessionListResult> {
+    const limit = Math.min(Math.max(params?.limit || 20, 1), 100);
+    const status = params?.status;
+    const cursor = params?.cursor;
+
+    const allUserSessions: SessionRecord[] = [];
+    const now = new Date();
+    for (const session of this.sessions.values()) {
+      if (session.userId !== userId) continue;
+      if (status && session.status !== status) continue;
+      // WHY: Expired sessions should not appear in active listings.
+      // Consistent with countActiveForUser's expiration check.
+      if (session.status === SessionStatus.ACTIVE) {
+        if (session.expiresAt <= now || session.idleExpiresAt <= now) continue;
+      }
+      allUserSessions.push({ ...session });
+    }
+
+    // Sort by createdAt descending (most recent first)
+    allUserSessions.sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+
+    const total = allUserSessions.length;
+
+    // Find cursor position
+    let startIndex = 0;
+    if (cursor) {
+      const cursorIndex = allUserSessions.findIndex((s) => s.id === cursor);
+      if (cursorIndex < 0) {
+        // WHY: Cursor not found means the session was deleted between pages.
+        // Returning empty page is safer than restarting from beginning (silent duplicates).
+        return { sessions: [], total, nextCursor: null };
+      }
+      startIndex = cursorIndex + 1;
+    }
+
+    const page = allUserSessions.slice(startIndex, startIndex + limit);
+    const nextCursor =
+      startIndex + limit < total ? page[page.length - 1]?.id || null : null;
+
+    return { sessions: page, total, nextCursor };
   }
 
   async acquireLock(key: string, ttlMs: number): Promise<boolean> {

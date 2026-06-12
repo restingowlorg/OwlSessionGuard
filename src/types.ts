@@ -244,3 +244,37 @@ export interface SecurityEvaluationResult {
   reason?: SessionReasonCode;
   message?: string;
 }
+
+/**
+ * Safe projection of a session record for external consumption.
+ * Strips all secrets (tokenHash, csrfToken) and internal linkage (parentSessionId, childSessionId).
+ */
+export interface SessionSnapshot {
+  sessionId: string;
+  status: SessionStatus;
+  roles: string[];
+  scopes: string[];
+  createdAt: Date;
+  lastUsedAt: Date;
+  expiresAt: Date;
+}
+
+/**
+ * Parameters for querying sessions via the store adapter.
+ */
+export interface SessionListParams {
+  status?: SessionStatus;
+  limit?: number;
+  cursor?: string;
+}
+
+/**
+ * Paginated result from a session listing query.
+ * WARNING: This is a store-internal type. Consumers should use the service-layer
+ * return type which returns SessionSnapshot[], not SessionRecord[].
+ */
+export interface SessionListResult {
+  sessions: SessionRecord[];
+  total: number;
+  nextCursor: string | null;
+}
