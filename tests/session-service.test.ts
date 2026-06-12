@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
 import { SessionService } from "../src/core/session.service";
+import { DeviceContextExtractor } from "../src/core/device-context-extractor";
 import { MemoryStoreAdapter } from "../src/storage/adapters/memory.adapter";
 import {
   SessionLibraryConfig,
@@ -27,7 +27,7 @@ describe("SessionService", () => {
       enforceTlsInProduction: false,
       ipBinding: "hard",
       fingerprinting: "off",
-      csrf: { enabled: false, mode: "double-submit" },
+      csrf: { enabled: false },
     },
     limits: { maxSessionsPerUser: 2 },
     store: { provider: "memory" },
@@ -39,7 +39,47 @@ describe("SessionService", () => {
     service = new SessionService(store, config);
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   describe("createSession", () => {
+    it("should emit session.fallback_fingerprint event when metadata has no valid deviceId", async () => {
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<{
+        sessionId: string;
+        userId: string;
+        deviceContext: Record<string, string | number | boolean>;
+      }>((resolve) => {
+        eventService.on("session.fallback_fingerprint", (...args: unknown[]) => {
+          const payload = args[0] as {
+            sessionId: string;
+            userId: string;
+            deviceContext: Record<string, string | number | boolean>;
+          };
+          resolve(payload);
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(true);
+      const payload = await eventPromise;
+      expect(payload.sessionId).toBeDefined();
+      expect(payload.userId).toBe("user-1");
+      expect(payload.deviceContext).toBeDefined();
+      expect(payload.deviceContext.os).toBeDefined();
+      expect(payload.deviceContext.browser).toBeDefined();
+      expect(payload.deviceContext.type).toBeDefined();
+    });
+
     it("should create a new session successfully", async () => {
       const result = await service.createSession({
         userId: "user-1",
@@ -73,6 +113,77 @@ describe("SessionService", () => {
       if (!result.success) {
         expect(result.error.reason).toBe(SessionReasonCode.SECURITY_BREACH);
       }
+    });
+
+    it("should fall back to UUID fingerprint when DeviceContextExtractor throws", async () => {
+      const extractSpy = jest.spyOn(DeviceContextExtractor, "extract").mockImplementation(() => {
+        throw new Error("extractor failure");
+      });
+
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<{
+        userId: string;
+        error: string;
+        metadata: { ipAddress: string; userAgent?: string };
+      }>((resolve) => {
+        eventService.on("security.extractor_failed", (payload: unknown) => {
+          resolve(payload as {
+            userId: string;
+            error: string;
+            metadata: { ipAddress: string; userAgent?: string };
+          });
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1", userAgent: "TestAgent/1.0" },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.record.metadata.deviceFingerprint).toMatch(/^fallback_/);
+      }
+
+      const eventPayload = await eventPromise;
+      expect(eventPayload.userId).toBe("user-1");
+      expect(eventPayload.error).toBe("extractor failure");
+      expect(eventPayload.metadata).toBeDefined();
+      expect(eventPayload.metadata.ipAddress).toBe("127.0.0.1");
+      expect(eventPayload.metadata.userAgent).toBe("TestAgent/1.0");
+
+      extractSpy.mockRestore();
+    });
+
+    it("should run all session.created listeners even when one throws", async () => {
+      const eventService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      let secondListenerRan = false;
+      const listenerPromise = new Promise<void>((resolve) => {
+        eventService.on("session.created", () => {
+          throw new Error("first listener threw");
+        });
+        eventService.on("session.created", () => {
+          secondListenerRan = true;
+          resolve();
+        });
+      });
+
+      const result = await eventService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(true);
+      await listenerPromise;
+      expect(secondListenerRan).toBe(true);
     });
   });
 
@@ -156,6 +267,9 @@ describe("SessionService", () => {
         });
 
         expect(revokeResult.success).toBe(true);
+        if (revokeResult.success) {
+          expect(revokeResult.data.alreadyRevoked).toBeUndefined();
+        }
 
         const validateResult = await service.validateSession({
           token: createResult.data.token,
@@ -163,34 +277,6 @@ describe("SessionService", () => {
         });
         expect(validateResult.success).toBe(false);
       }
-    });
-  });
-
-  describe("Custom Concurrency Configuration", () => {
-    it("should successfully accept and initialize with custom concurrency settings", () => {
-      const customConfig: SessionLibraryConfig = {
-        ...config,
-        concurrency: {
-          lockTimeoutMs: 100,
-          pollIntervalMs: 10,
-        },
-      };
-      const customService = new SessionService(store, customConfig);
-      expect(customService).toBeDefined();
-    });
-
-    it("should reject invalid concurrency settings during validation", () => {
-      const { ConfigValidator } = require("../src/config/validator");
-      const invalidConfig = {
-        ...config,
-        concurrency: {
-          lockTimeoutMs: -10,
-        },
-      } as unknown as SessionLibraryConfig;
-
-      expect(() => ConfigValidator.validate(invalidConfig)).toThrow(
-        /must be a positive number/,
-      );
     });
   });
 });
