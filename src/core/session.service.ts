@@ -468,6 +468,7 @@ export class SessionService implements ISessionService {
     SessionOpResult<{
       sessions: SessionSnapshot[];
       total: number;
+      totalIsApproximate: boolean;
       nextCursor: string | null;
     }>
   > {
@@ -501,6 +502,7 @@ export class SessionService implements ISessionService {
         data: {
           sessions: snapshots,
           total: result.total,
+          totalIsApproximate: result.totalIsApproximate,
           nextCursor: result.nextCursor,
         },
         httpCode: 200,
@@ -680,8 +682,18 @@ export class SessionService implements ISessionService {
    * Projects a full SessionRecord into a safe SessionSnapshot.
    * WHY: Never expose tokenHash, csrfToken, or parent/child linkage to consumers.
    * Roles and scopes ARE included — they're authorization context, not secrets.
+   * Device label is derived from deviceContext — sanitized, not raw.
    */
   private toSnapshot(record: SessionRecord): SessionSnapshot {
+    const dc = record.metadata?.deviceContext;
+    let deviceLabel: string | undefined;
+    if (dc) {
+      const parts = [dc.os, dc.browser, dc.deviceType].filter(Boolean);
+      if (parts.length > 0) {
+        deviceLabel = parts.join(" — ");
+      }
+    }
+
     return {
       sessionId: record.id,
       status: record.status,
@@ -690,6 +702,7 @@ export class SessionService implements ISessionService {
       createdAt: record.createdAt,
       lastUsedAt: record.lastUsedAt,
       expiresAt: record.expiresAt,
+      deviceLabel,
     };
   }
 

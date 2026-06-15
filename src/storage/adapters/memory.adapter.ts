@@ -149,7 +149,12 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       if (cursorIndex < 0) {
         // WHY: Cursor not found means the session was deleted between pages.
         // Returning empty page is safer than restarting from beginning (silent duplicates).
-        return { sessions: [], total, nextCursor: null };
+        return {
+          sessions: [],
+          total,
+          totalIsApproximate: false,
+          nextCursor: null,
+        };
       }
       startIndex = cursorIndex + 1;
     }
@@ -158,7 +163,7 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
     const nextCursor =
       startIndex + limit < total ? page[page.length - 1]?.id || null : null;
 
-    return { sessions: page, total, nextCursor };
+    return { sessions: page, total, totalIsApproximate: false, nextCursor };
   }
 
   async acquireLock(key: string, ttlMs: number): Promise<boolean> {

@@ -287,6 +287,7 @@ describe("SessionService", () => {
       if (result.success) {
         expect(result.data.sessions).toEqual([]);
         expect(result.data.total).toBe(0);
+        expect(result.data.totalIsApproximate).toBe(false);
         expect(result.data.nextCursor).toBeNull();
       }
     });
@@ -330,6 +331,27 @@ describe("SessionService", () => {
       if (result.success) {
         expect(result.data.sessions[0].roles).toEqual(["admin", "user"]);
         expect(result.data.sessions[0].scopes).toEqual(["read", "write"]);
+      }
+    });
+
+    it("should include deviceLabel derived from deviceContext", async () => {
+      await service.createSession({
+        userId: "user-1",
+        metadata: {
+          ipAddress: "10.0.0.1",
+          userAgent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        },
+      });
+
+      const result = await service.listUserSessions("user-1");
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        const snapshot = result.data.sessions[0];
+        expect(snapshot.deviceLabel).toBeDefined();
+        expect(typeof snapshot.deviceLabel).toBe("string");
+        expect(snapshot.deviceLabel!.length).toBeGreaterThan(0);
       }
     });
 
@@ -528,6 +550,7 @@ describe("SessionService", () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.sessions.length).toBe(0);
+        expect(result.data.totalIsApproximate).toBe(false);
       }
     });
   });

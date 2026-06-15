@@ -121,6 +121,7 @@ export function runAdapterContractTests(
 
       expect(result.sessions.length).toBe(2);
       expect(result.total).toBe(2);
+      expect(result.totalIsApproximate).toBe(false);
       expect(result.nextCursor).toBeNull();
     });
 

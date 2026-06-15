@@ -402,7 +402,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       // Fetch all active entries from sorted set
       const entries = await this.redis.zrange(userKey, 0, -1);
       if (entries.length === 0) {
-        return { sessions: [], total: 0, nextCursor: null };
+        return {
+          sessions: [],
+          total: 0,
+          totalIsApproximate: false,
+          nextCursor: null,
+        };
       }
 
       // Hydrate all session records
@@ -433,7 +438,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         if (cursorIndex < 0) {
           // WHY: Cursor not found means the session was deleted between pages.
           // Returning empty page is safer than restarting from beginning.
-          return { sessions: [], total, nextCursor: null };
+          return {
+            sessions: [],
+            total,
+            totalIsApproximate: false,
+            nextCursor: null,
+          };
         }
         startIndex = cursorIndex + 1;
       }
@@ -442,7 +452,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       const nextCursor =
         startIndex + limit < total ? page[page.length - 1]?.id || null : null;
 
-      return { sessions: page, total, nextCursor };
+      return { sessions: page, total, totalIsApproximate: false, nextCursor };
     }
 
     // For non-active statuses, scan session keys and filter in memory.
@@ -454,6 +464,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     const SCAN_BATCH = 100;
     const SCAN_TIMEOUT_MS = 5000;
     const scanStart = Date.now();
+    let scanTruncated = false;
 
     do {
       const result = await this.redis.scan(
@@ -484,10 +495,16 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
       // WHY: Prevent indefinite hangs on slow Redis instances.
       // OWASP A05 — every IO operation must have a timeout boundary.
-      if (Date.now() - scanStart > SCAN_TIMEOUT_MS) break;
+      if (Date.now() - scanStart > SCAN_TIMEOUT_MS) {
+        scanTruncated = true;
+        break;
+      }
 
       // Safety valve: cap scan iterations to prevent runaway
-      if (scanned > 10000) break;
+      if (scanned > 10000) {
+        scanTruncated = true;
+        break;
+      }
     } while (cursorVal !== "0" && found.length < limit + 1);
 
     // Sort by createdAt descending
@@ -501,7 +518,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     if (cursor) {
       const cursorIndex = found.findIndex((s) => s.id === cursor);
       if (cursorIndex < 0) {
-        return { sessions: [], total, nextCursor: null };
+        return {
+          sessions: [],
+          total,
+          totalIsApproximate: scanTruncated,
+          nextCursor: null,
+        };
       }
       startIndex = cursorIndex + 1;
     }
@@ -510,7 +532,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     const nextCursor =
       startIndex + limit < total ? page[page.length - 1]?.id || null : null;
 
-    return { sessions: page, total, nextCursor };
+    return {
+      sessions: page,
+      total,
+      totalIsApproximate: scanTruncated,
+      nextCursor,
+    };
   }
 
   async countActiveForUser(userId: string): Promise<number> {

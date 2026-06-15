@@ -68,6 +68,7 @@ export interface ISessionService {
     SessionOpResult<{
       sessions: SessionSnapshot[];
       total: number;
+      totalIsApproximate: boolean;
       nextCursor: string | null;
     }>
   >;

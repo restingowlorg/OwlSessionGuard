@@ -334,6 +334,8 @@ export interface SessionSnapshot {
   createdAt: Date;
   lastUsedAt: Date;
   expiresAt: Date;
+  /** Derived device label (e.g. "Windows PC — Chrome"). Sanitized — no raw deviceContext exposed. */
+  deviceLabel?: string;
 }
 
 /**
@@ -353,6 +355,8 @@ export interface SessionListParams {
 export interface SessionListResult {
   sessions: SessionRecord[];
   total: number;
+  /** When true, total is approximate (SCAN hit timeout or 10K cap). UI should show "X+" not "X". */
+  totalIsApproximate: boolean;
   nextCursor: string | null;
 }
 
