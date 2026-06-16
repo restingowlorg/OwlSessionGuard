@@ -1,4 +1,4 @@
-import { SessionRecord } from "../types";
+import { SessionRecord, SessionListParams, SessionListResult } from "../types";
 
 /**
  * SessionStoreAdapter — Uniform interface for all session storage backends.
@@ -61,6 +61,15 @@ export interface SessionStoreAdapter {
    * Count active sessions for a user (used for session limits).
    */
   countActiveForUser(userId: string): Promise<number>;
+
+  /**
+   * List sessions for a user with optional status filter and pagination.
+   * Returns raw SessionRecord[] — projection to SessionSnapshot happens in the service layer.
+   */
+  findAllForUser(
+    userId: string,
+    params?: SessionListParams,
+  ): Promise<SessionListResult>;
 
   /**
    * Optional: Acquire a transient lock for concurrency control.

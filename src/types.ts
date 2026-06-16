@@ -322,6 +322,44 @@ export interface SecurityEvaluationResult {
   softWarning?: boolean;
 }
 
+/**
+ * Safe projection of a session record for external consumption.
+ * Strips all secrets (tokenHash, csrfToken) and internal linkage (parentSessionId, childSessionId).
+ */
+export interface SessionSnapshot {
+  sessionId: string;
+  status: SessionStatus;
+  roles: string[];
+  scopes: string[];
+  createdAt: Date;
+  lastUsedAt: Date;
+  expiresAt: Date;
+  /** Derived device label (e.g. "Windows PC — Chrome"). Sanitized — no raw deviceContext exposed. */
+  deviceLabel?: string;
+}
+
+/**
+ * Parameters for querying sessions via the store adapter.
+ */
+export interface SessionListParams {
+  status?: SessionStatus;
+  limit?: number;
+  cursor?: string;
+}
+
+/**
+ * Paginated result from a session listing query.
+ * WARNING: This is a store-internal type. Consumers should use the service-layer
+ * return type which returns SessionSnapshot[], not SessionRecord[].
+ */
+export interface SessionListResult {
+  sessions: SessionRecord[];
+  total: number;
+  /** When true, total is approximate (SCAN hit timeout or 10K cap). UI should show "X+" not "X". */
+  totalIsApproximate: boolean;
+  nextCursor: string | null;
+}
+
 /** Result shape returned by a validateFn to BridgeProcessor.handle(). */
 export interface ValidateResult {
   success: boolean;

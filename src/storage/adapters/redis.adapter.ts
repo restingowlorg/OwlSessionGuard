@@ -1,6 +1,11 @@
 import Redis from "ioredis";
 import { SessionStoreAdapter } from "../contracts";
-import { SessionRecord } from "../../types";
+import {
+  SessionRecord,
+  SessionStatus,
+  SessionListParams,
+  SessionListResult,
+} from "../../types";
 import { RedisStoreOptions } from "../../interfaces";
 
 /**
@@ -374,6 +379,165 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       }
       await deletePipeline.exec();
     } while (entries.length >= this.batchSize);
+  }
+
+  async findAllForUser(
+    userId: string,
+    params?: SessionListParams,
+  ): Promise<SessionListResult> {
+    const limit = Math.min(Math.max(params?.limit || 20, 1), 100);
+    const status = params?.status;
+    const cursor = params?.cursor;
+    const userKey = this.key("idx:user", userId);
+    const now = Date.now();
+
+    // Active sessions are indexed in the sorted set with scores = expiresAt timestamp.
+    // WHY: Fetch ALL entries then sort in memory by createdAt descending. The sorted set
+    // is ordered by expiresAt (score), but clients expect newest-first (createdAt).
+    // Sessions per user are bounded by maxSessions config (small), so O(N) is acceptable.
+    if (!status || status === SessionStatus.ACTIVE) {
+      // Purge expired entries first
+      await this.redis.zremrangebyscore(userKey, "-inf", now);
+
+      // Fetch all active entries from sorted set
+      const entries = await this.redis.zrange(userKey, 0, -1);
+      if (entries.length === 0) {
+        return {
+          sessions: [],
+          total: 0,
+          totalIsApproximate: false,
+          nextCursor: null,
+        };
+      }
+
+      // Hydrate all session records
+      const sessions: SessionRecord[] = [];
+      const pipeline = this.redis.pipeline();
+      for (const entry of entries) {
+        const [id] = entry.split(":");
+        pipeline.get(this.key("sess", id));
+      }
+      const results = await pipeline.exec();
+
+      if (results) {
+        for (const result of results) {
+          if (!result || result[0] || !result[1]) continue;
+          sessions.push(this.parseRecord(result[1] as string));
+        }
+      }
+
+      // Sort by createdAt descending to match Memory adapter's sort order
+      sessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      const total = sessions.length;
+
+      // Cursor-based pagination on the sorted-in-memory array
+      let startIndex = 0;
+      if (cursor) {
+        const cursorIndex = sessions.findIndex((s) => s.id === cursor);
+        if (cursorIndex < 0) {
+          // WHY: Cursor not found means the session was deleted between pages.
+          // Returning empty page is safer than restarting from beginning.
+          return {
+            sessions: [],
+            total,
+            totalIsApproximate: false,
+            nextCursor: null,
+          };
+        }
+        startIndex = cursorIndex + 1;
+      }
+
+      const page = sessions.slice(startIndex, startIndex + limit);
+      const nextCursor =
+        startIndex + limit < total ? page[page.length - 1]?.id || null : null;
+
+      return { sessions: page, total, totalIsApproximate: false, nextCursor };
+    }
+
+    // For non-active statuses, scan session keys and filter in memory.
+    // This is O(N) but only used for revoked/expired queries (audit use).
+    const pattern = this.key("sess", "*");
+    let cursorVal: string | undefined;
+    const found: SessionRecord[] = [];
+    let scanned = 0;
+    const SCAN_BATCH = 100;
+    const SCAN_TIMEOUT_MS = 5000;
+    const scanStart = Date.now();
+    let scanTruncated = false;
+
+    do {
+      const result = await this.redis.scan(
+        cursorVal === undefined ? "0" : cursorVal,
+        "MATCH",
+        pattern,
+        "COUNT",
+        SCAN_BATCH,
+      );
+      cursorVal = result[0];
+      const keys = result[1];
+      scanned += keys.length;
+
+      if (keys.length > 0) {
+        const pipeline = this.redis.pipeline();
+        for (const k of keys) pipeline.get(k);
+        const scanResults = await pipeline.exec();
+        if (scanResults) {
+          for (const r of scanResults) {
+            if (!r || r[0] || !r[1]) continue;
+            const record = this.parseRecord(r[1] as string);
+            if (record.userId !== userId) continue;
+            if (record.status !== status) continue;
+            found.push(record);
+          }
+        }
+      }
+
+      // WHY: Prevent indefinite hangs on slow Redis instances.
+      // OWASP A05 — every IO operation must have a timeout boundary.
+      if (Date.now() - scanStart > SCAN_TIMEOUT_MS) {
+        scanTruncated = true;
+        break;
+      }
+
+      // Safety valve: cap scan iterations to prevent runaway
+      if (scanned > 10000) {
+        scanTruncated = true;
+        break;
+      }
+    } while (cursorVal !== "0" && found.length < limit + 1);
+
+    // Sort by createdAt descending
+    found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    // WHY: total = found.length (what was actually found within the scan window).
+    // If SCAN hit the 10K key cap or 5s timeout, this total is APPROXIMATE.
+    const total = found.length;
+
+    let startIndex = 0;
+    if (cursor) {
+      const cursorIndex = found.findIndex((s) => s.id === cursor);
+      if (cursorIndex < 0) {
+        return {
+          sessions: [],
+          total,
+          totalIsApproximate: true,
+          nextCursor: null,
+        };
+      }
+      startIndex = cursorIndex + 1;
+    }
+
+    const page = found.slice(startIndex, startIndex + limit);
+    const nextCursor =
+      startIndex + limit < total ? page[page.length - 1]?.id || null : null;
+
+    return {
+      sessions: page,
+      total,
+      totalIsApproximate: scanTruncated,
+      nextCursor,
+    };
   }
 
   async countActiveForUser(userId: string): Promise<number> {

@@ -15,6 +15,8 @@ import {
   SessionSuccess,
   SecurityEvaluationContext,
   SecurityEvaluationResult,
+  SessionSnapshot,
+  SessionListParams,
   DeviceOS,
   DeviceBrowser,
   DeviceType,
@@ -456,6 +458,71 @@ export class SessionService implements ISessionService {
   }
 
   /**
+   * List sessions for a user with pagination.
+   * Returns safe snapshots — no token hashes, no CSRF tokens, no session tree linkage.
+   */
+  public async listUserSessions(
+    userId: string,
+    params?: SessionListParams,
+  ): Promise<
+    SessionOpResult<{
+      sessions: SessionSnapshot[];
+      total: number;
+      totalIsApproximate: boolean;
+      nextCursor: string | null;
+    }>
+  > {
+    // WHY: OWASP A03 — assume all input is malicious. Reject empty/invalid userId
+    // at the boundary rather than letting it propagate to the store layer.
+    if (!userId || typeof userId !== "string") {
+      return this.fail("Invalid userId: must be a non-empty string", 400);
+    }
+
+    try {
+      const result = await this.store.findAllForUser(userId, {
+        status: params?.status,
+        limit: params?.limit,
+        cursor: params?.cursor,
+      });
+
+      const snapshots: SessionSnapshot[] = result.sessions.map((r) =>
+        this.toSnapshot(r),
+      );
+
+      this.emitEvent("sessions.listed", {
+        userId,
+        status: params?.status || SessionStatus.ACTIVE,
+        count: snapshots.length,
+        total: result.total,
+        timestamp: new Date(),
+      });
+
+      return {
+        success: true,
+        data: {
+          sessions: snapshots,
+          total: result.total,
+          totalIsApproximate: result.totalIsApproximate,
+          nextCursor: result.nextCursor,
+        },
+        httpCode: 200,
+      };
+    } catch (error) {
+      // WHY: Store errors (Redis down, connection timeout) are upstream failures — 502,
+      // not 500. 500 implies the server is broken; 502 implies a dependency is broken.
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        error: {
+          code: "STORAGE_ERROR",
+          message: `Failed to list sessions: ${message}`,
+        },
+        httpCode: 502,
+      };
+    }
+  }
+
+  /**
    * Recursively revokes a session and its descendants (Automatic Reuse Detection).
    */
   private async revokeSessionTree(
@@ -609,6 +676,34 @@ export class SessionService implements ISessionService {
       actualUserAgent: params.context?.userAgent,
       timestamp: new Date(),
     });
+  }
+
+  /**
+   * Projects a full SessionRecord into a safe SessionSnapshot.
+   * WHY: Never expose tokenHash, csrfToken, or parent/child linkage to consumers.
+   * Roles and scopes ARE included — they're authorization context, not secrets.
+   * Device label is derived from deviceContext — sanitized, not raw.
+   */
+  private toSnapshot(record: SessionRecord): SessionSnapshot {
+    const dc = record.metadata?.deviceContext;
+    let deviceLabel: string | undefined;
+    if (dc) {
+      const parts = [dc.os, dc.browser, dc.deviceType].filter(Boolean);
+      if (parts.length > 0) {
+        deviceLabel = parts.join(" — ");
+      }
+    }
+
+    return {
+      sessionId: record.id,
+      status: record.status,
+      roles: record.roles,
+      scopes: record.scopes,
+      createdAt: record.createdAt,
+      lastUsedAt: record.lastUsedAt,
+      expiresAt: record.expiresAt,
+      deviceLabel,
+    };
   }
 
   private fail<T>(

@@ -112,6 +112,67 @@ export function runAdapterContractTests(
       expect(count).toBe(1);
     });
 
+    test("should findAllForUser return active sessions with default pagination", async () => {
+      const userId = uuidv4();
+      await adapter.create(createMockRecord({ id: "s1", userId }));
+      await adapter.create(createMockRecord({ id: "s2", userId }));
+
+      const result = await adapter.findAllForUser(userId);
+
+      expect(result.sessions.length).toBe(2);
+      expect(result.total).toBe(2);
+      expect(result.totalIsApproximate).toBe(false);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    test("should findAllForUser filter by status", async () => {
+      const userId = uuidv4();
+      await adapter.create(createMockRecord({ id: "active", userId, status: SessionStatus.ACTIVE }));
+      await adapter.create(createMockRecord({ id: "revoked", userId, status: SessionStatus.REVOKED }));
+
+      const activeResult = await adapter.findAllForUser(userId, { status: SessionStatus.ACTIVE });
+      expect(activeResult.sessions.length).toBe(1);
+      expect(activeResult.sessions[0].id).toBe("active");
+
+      const revokedResult = await adapter.findAllForUser(userId, { status: SessionStatus.REVOKED });
+      expect(revokedResult.sessions.length).toBe(1);
+      expect(revokedResult.sessions[0].id).toBe("revoked");
+    });
+
+    test("should findAllForUser paginate with limit and cursor", async () => {
+      const userId = uuidv4();
+      await adapter.create(createMockRecord({ id: "s1", userId }));
+      await adapter.create(createMockRecord({ id: "s2", userId }));
+      await adapter.create(createMockRecord({ id: "s3", userId }));
+
+      const page1 = await adapter.findAllForUser(userId, { limit: 2 });
+      expect(page1.sessions.length).toBe(2);
+      expect(page1.total).toBe(3);
+      expect(page1.nextCursor).toBeDefined();
+
+      const page2 = await adapter.findAllForUser(userId, { limit: 2, cursor: page1.nextCursor! });
+      expect(page2.sessions.length).toBe(1);
+      expect(page2.nextCursor).toBeNull();
+    });
+
+    test("should findAllForUser return empty for nonexistent user", async () => {
+      const result = await adapter.findAllForUser("nonexistent");
+      expect(result.sessions).toEqual([]);
+      expect(result.total).toBe(0);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    test("should findAllForUser not return sessions from other users", async () => {
+      const userId = uuidv4();
+      const otherUserId = uuidv4();
+      await adapter.create(createMockRecord({ id: "mine", userId }));
+      await adapter.create(createMockRecord({ id: "theirs", userId: otherUserId }));
+
+      const result = await adapter.findAllForUser(userId);
+      expect(result.sessions.length).toBe(1);
+      expect(result.sessions[0].id).toBe("mine");
+    });
+
     test("should find session by NEW token hash after rotation", async () => {
       const record = createMockRecord();
       await adapter.create(record);
@@ -125,6 +186,45 @@ export function runAdapterContractTests(
       expect(foundOld).toBeNull(); // Old index should be unlinked
       expect(foundNew).not.toBeNull();
       expect(foundNew?.id).toBe(record.id);
+    });
+
+    test("should findAllForUser not return expired ACTIVE sessions", async () => {
+      const userId = uuidv4();
+      const now = new Date();
+      await adapter.create(
+        createMockRecord({
+          id: "expired-active",
+          userId,
+          status: SessionStatus.ACTIVE,
+          expiresAt: new Date(now.getTime() - 1000),
+        }),
+      );
+      await adapter.create(
+        createMockRecord({
+          id: "valid-active",
+          userId,
+          status: SessionStatus.ACTIVE,
+          expiresAt: new Date(now.getTime() + 3600000),
+        }),
+      );
+
+      const result = await adapter.findAllForUser(userId, {
+        status: SessionStatus.ACTIVE,
+      });
+      expect(result.sessions.length).toBe(1);
+      expect(result.sessions[0].id).toBe("valid-active");
+    });
+
+    test("should findAllForUser return empty when cursor points to deleted session", async () => {
+      const userId = uuidv4();
+      await adapter.create(createMockRecord({ id: "s1", userId }));
+
+      const result = await adapter.findAllForUser(userId, {
+        limit: 1,
+        cursor: "nonexistent-id",
+      });
+      expect(result.sessions).toEqual([]);
+      expect(result.nextCursor).toBeNull();
     });
   });
 }
