@@ -521,7 +521,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         return {
           sessions: [],
           total,
-          totalIsApproximate: scanTruncated,
+          totalIsApproximate: true,
           nextCursor: null,
         };
       }
