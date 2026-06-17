@@ -3,6 +3,7 @@ import { SessionStoreAdapter } from "../contracts";
 import {
   SessionRecord,
   SessionStatus,
+  SessionReasonCode,
   SessionListParams,
   SessionListResult,
 } from "../../types";
@@ -379,6 +380,163 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       }
       await deletePipeline.exec();
     } while (entries.length >= this.batchSize);
+  }
+
+  async revokeAllForUser(
+    userId: string,
+    reason: SessionReasonCode,
+    revokedAt: Date,
+  ): Promise<string[]> {
+    const affected: string[] = [];
+    const userKey = this.key("idx:user", userId);
+
+    // WHY: Batch pipeline approach (like deleteAllForUser) but with soft-revocation.
+    // Reads session data, checks if not already revoked, updates status in-place.
+    // Preserves records for audit trail instead of hard-deleting.
+    let entries: string[];
+    do {
+      entries = await this.redis.zrange(userKey, 0, this.batchSize - 1);
+      if (entries.length === 0) break;
+
+      const readPipeline = this.redis.pipeline();
+      const entryIds: string[] = [];
+      for (const entry of entries) {
+        const [id] = entry.split(":");
+        readPipeline.get(this.key("sess", id));
+        entryIds.push(id);
+      }
+      const results = await readPipeline.exec();
+      if (!results) break;
+
+      const writePipeline = this.redis.pipeline();
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (!result || result[0] || !result[1]) continue;
+        const record = this.parseRecord(result[1] as string);
+        if (record.status === SessionStatus.REVOKED) continue;
+
+        record.status = SessionStatus.REVOKED;
+        record.revokedAt = revokedAt;
+        record.revocationReason = reason;
+        const ttl = this.calculateTTL(record.expiresAt);
+
+        writePipeline.set(
+          this.key("sess", record.id),
+          JSON.stringify(record),
+          "EX",
+          ttl,
+        );
+        // WHY: Remove from active session index since status is no longer active.
+        writePipeline.zrem(userKey, `${record.id}:${record.tokenHash}`);
+        affected.push(record.id);
+      }
+      await writePipeline.exec();
+    } while (entries.length >= this.batchSize);
+
+    return affected;
+  }
+
+  /**
+   * WHY: Returns only ACTIVE + ROTATED sessions. ACTIVE sessions come from the
+   * sorted set (fast O(N) where N = active count). ROTATED sessions are found via
+   * bounded SCAN — they're few because ROTATED has a short grace period (typically 5min).
+   * Excludes REVOKED/EXPIRED to avoid loading audit-piled records.
+   *
+   * SECURITY: SCAN iterates all sess:* keys (not user-scoped) because ROTATED sessions
+   * are removed from the user sorted set. Safety bounds (timeout + max iterations)
+   * prevent runaway scans from blocking Redis on large instances.
+   */
+  async findLiveSessionsForUser(userId: string): Promise<SessionRecord[]> {
+    const userKey = this.key("idx:user", userId);
+    const now = Date.now();
+
+    // 1. Purge expired entries from sorted set, then fetch ACTIVE sessions
+    await this.redis.zremrangebyscore(userKey, "-inf", now);
+    const activeEntries = await this.redis.zrange(userKey, 0, -1);
+
+    const live: SessionRecord[] = [];
+    const hydrateIds: string[] = [];
+
+    for (const entry of activeEntries) {
+      const [id] = entry.split(":");
+      hydrateIds.push(id);
+    }
+
+    // 2. Hydrate ACTIVE sessions via pipeline
+    if (hydrateIds.length > 0) {
+      const pipeline = this.redis.pipeline();
+      for (const id of hydrateIds) pipeline.get(this.key("sess", id));
+      const results = await pipeline.exec();
+      if (results) {
+        for (const r of results) {
+          if (!r || r[0] || !r[1]) continue;
+          const record = this.parseRecord(r[1] as string);
+          if (
+            record.userId === userId &&
+            record.status === SessionStatus.ACTIVE
+          ) {
+            live.push(record);
+          }
+        }
+      }
+    }
+
+    // 3. SCAN for ROTATED sessions (bounded — short grace period, few per user)
+    // WHY: ROTATED sessions are removed from the sorted set but still usable
+    // within the grace period. We must include them in "live" results.
+    // SECURITY: Safety bounds prevent runaway SCAN on large Redis instances.
+    const pattern = this.key("sess", "*");
+    let cursorVal: string | undefined;
+    const activeIds = new Set(hydrateIds);
+    let scanned = 0;
+    const SCAN_BATCH = 100;
+    const SCAN_TIMEOUT_MS = 5000;
+    const SCAN_MAX_KEYS = 10000;
+    const scanStart = Date.now();
+
+    do {
+      const result = await this.redis.scan(
+        cursorVal === undefined ? "0" : cursorVal,
+        "MATCH",
+        pattern,
+        "COUNT",
+        SCAN_BATCH,
+      );
+      cursorVal = result[0];
+      const keys = result[1];
+      scanned += keys.length;
+
+      if (keys.length > 0) {
+        const newKeys = keys.filter((k) => {
+          const id = k.split(":").pop()!;
+          return !activeIds.has(id);
+        });
+
+        if (newKeys.length > 0) {
+          const pipeline = this.redis.pipeline();
+          for (const k of newKeys) pipeline.get(k);
+          const scanResults = await pipeline.exec();
+          if (scanResults) {
+            for (const r of scanResults) {
+              if (!r || r[0] || !r[1]) continue;
+              const record = this.parseRecord(r[1] as string);
+              if (
+                record.userId === userId &&
+                record.status === SessionStatus.ROTATED
+              ) {
+                live.push(record);
+              }
+            }
+          }
+        }
+      }
+
+      // WHY: Prevent indefinite hangs on slow Redis instances.
+      if (Date.now() - scanStart > SCAN_TIMEOUT_MS) break;
+      if (scanned > SCAN_MAX_KEYS) break;
+    } while (cursorVal !== "0");
+
+    return live;
   }
 
   async findAllForUser(

@@ -7,3 +7,4 @@ export * from "./middleware/bridge";
 export * from "./middleware/express";
 export * from "./middleware/fastify";
 export * from "./middleware/nestjs";
+export * from "./core/selective-revocation-engine";

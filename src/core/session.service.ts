@@ -27,6 +27,7 @@ import { SessionStateMachine } from "./state-machine";
 import { SecurityPolicyEvaluator } from "./security-policy-evaluator";
 import { ConfigValidator } from "./config-validator";
 import { DeviceContextExtractor } from "./device-context-extractor";
+import { SelectiveRevocationEngine } from "./selective-revocation-engine";
 
 /**
  * SessionService — Core session manager supporting locking concurrency queues,
@@ -35,6 +36,7 @@ import { DeviceContextExtractor } from "./device-context-extractor";
 export class SessionService implements ISessionService {
   private readonly evaluator: SecurityPolicyEvaluator;
   private readonly events = new EventEmitter();
+  private readonly revocationEngine: SelectiveRevocationEngine;
 
   constructor(
     private readonly store: SessionStoreAdapter,
@@ -42,6 +44,21 @@ export class SessionService implements ISessionService {
   ) {
     ConfigValidator.validate(config);
     this.evaluator = new SecurityPolicyEvaluator(config);
+    // WHY: Engine receives emitEvent bound to this instance so events go through
+    // the same isolated listener dispatch as all other SessionService events.
+    this.revocationEngine = new SelectiveRevocationEngine(
+      this.store,
+      this.emitEvent.bind(this),
+    );
+  }
+
+  /**
+   * Expose the selective revocation engine for targeted session killing.
+   * WHY: Keeps SessionService focused on CRUD/validate/rotate while
+   * delegating bulk revocation concerns to a dedicated component.
+   */
+  public get selectiveRevocation(): SelectiveRevocationEngine {
+    return this.revocationEngine;
   }
 
   /**
@@ -427,27 +444,39 @@ export class SessionService implements ISessionService {
   }
 
   /**
-   * Revoke all sessions for a user.
+   * Revoke all sessions for a user (soft-revoke, preserves audit trail).
+   * WHY: Delegates to SelectiveRevocationEngine for consistent soft-revocation
+   * behavior across all bulk revocation operations.
    */
   public async revokeAllSessionsForUser(
     userId: string,
     reason: SessionReasonCode,
   ): Promise<SessionOpResult<SessionSuccess>> {
     try {
-      await this.store.deleteAllForUser(userId);
-
-      this.emitEvent("user.all_sessions_revoked", {
+      const result = await this.revocationEngine.revokeAllForUser(
         userId,
         reason,
-        timestamp: new Date(),
-      });
+      );
+
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error,
+          httpCode: result.httpCode,
+          clearCsrfToken: true,
+        };
+      }
 
       return {
         success: true,
         data: {
           acknowledged: true,
-          timestamp: new Date(),
-          alreadyRevoked: false,
+          timestamp: result.data.timestamp,
+          alreadyRevoked: result.data.revokedCount === 0,
+          failedSessionIds:
+            result.data.failedSessionIds.length > 0
+              ? result.data.failedSessionIds
+              : undefined,
         },
         httpCode: 200,
         clearCsrfToken: true,
