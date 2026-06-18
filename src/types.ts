@@ -33,6 +33,11 @@ export enum SessionReasonCode {
   // Administrative
   ADMIN_REVOKED = "admin_revoked",
   USER_ALL_SESSIONS_REVOKED = "user_all_sessions_revoked",
+
+  // Selective Revocation
+  DEVICE_LOGOUT = "device_logout",
+  ROLE_DEPRECATED = "role_deprecated",
+  TIMESTAMP_PURGE = "timestamp_purge",
 }
 
 /**
@@ -156,11 +161,14 @@ export type SessionOpResult<T> =
 
 /**
  * Explicit success result for operations that don't return data.
+ * WHY: failedSessionIds surfaces partial revocation failures so callers
+ * can retry or alert — silently swallowing them was a design gap.
  */
 export interface SessionSuccess {
   acknowledged: boolean;
   timestamp: Date;
   alreadyRevoked?: boolean;
+  failedSessionIds?: string[];
 }
 
 /**
@@ -198,6 +206,53 @@ export interface RevokeSessionParams {
   token?: string;
   sessionId?: string;
   reason: SessionReasonCode;
+}
+
+/**
+ * Parameters for selective revocation by device fingerprint.
+ * WHY: Allows targeting a single device (e.g., lost phone) without affecting other sessions.
+ */
+export interface RevokeByDeviceParams {
+  userId: string;
+  deviceFingerprint: string;
+  reason: SessionReasonCode;
+  excludeSessionId?: string;
+}
+
+/**
+ * Parameters for selective revocation by timestamp.
+ * WHY: Critical for password resets — kills all old sessions while keeping the one
+ * the user just used to change their password.
+ */
+export interface RevokeBeforeTimestampParams {
+  userId: string;
+  issuedBefore: Date;
+  reason: SessionReasonCode;
+  keepSessionId?: string;
+}
+
+/**
+ * Parameters for selective revocation by role.
+ * WHY: Useful when a role is compromised or deprecated — kills all sessions
+ * holding that specific permission.
+ */
+export interface RevokeByRoleParams {
+  userId: string;
+  role: string;
+  reason: SessionReasonCode;
+  excludeSessionId?: string;
+}
+
+/**
+ * Result of a bulk revocation operation.
+ * WHY: Reports both succeeded and failed session IDs so callers can handle
+ * partial revocation (e.g., retry failed ones, alert on partial failure).
+ */
+export interface RevocationResult {
+  revokedCount: number;
+  revokedSessionIds: string[];
+  failedSessionIds: string[];
+  timestamp: Date;
 }
 
 /**

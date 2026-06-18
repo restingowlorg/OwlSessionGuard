@@ -226,5 +226,189 @@ export function runAdapterContractTests(
       expect(result.sessions).toEqual([]);
       expect(result.nextCursor).toBeNull();
     });
+
+    test("should revokeAllForUser soft-revoke all sessions and return affected IDs", async () => {
+      if (!adapter.revokeAllForUser) return; // Skip if adapter doesn't implement
+
+      const userId = uuidv4();
+      await adapter.create(createMockRecord({ id: "s1", userId }));
+      await adapter.create(createMockRecord({ id: "s2", userId }));
+      await adapter.create(createMockRecord({ id: "s3", userId: "other" }));
+
+      const revokedAt = new Date();
+      const affected = await adapter.revokeAllForUser(
+        userId,
+        SessionReasonCode.ADMIN_REVOKED,
+        revokedAt,
+      );
+
+      expect(affected).toHaveLength(2);
+      expect(affected).toContain("s1");
+      expect(affected).toContain("s2");
+
+      const s1 = await adapter.findById("s1");
+      const s2 = await adapter.findById("s2");
+      const s3 = await adapter.findById("s3");
+      expect(s1?.status).toBe(SessionStatus.REVOKED);
+      expect(s1?.revocationReason).toBe(SessionReasonCode.ADMIN_REVOKED);
+      expect(s2?.status).toBe(SessionStatus.REVOKED);
+      expect(s3?.status).toBe(SessionStatus.ACTIVE); // Other user untouched
+    });
+
+    test("should revokeAllForUser return empty array when already revoked", async () => {
+      if (!adapter.revokeAllForUser) return;
+
+      const userId = uuidv4();
+      await adapter.create(
+        createMockRecord({
+          id: "s1",
+          userId,
+          status: SessionStatus.REVOKED,
+          revokedAt: new Date(),
+          revocationReason: SessionReasonCode.MANUAL_LOGOUT,
+        }),
+      );
+
+      const affected = await adapter.revokeAllForUser(
+        userId,
+        SessionReasonCode.ADMIN_REVOKED,
+        new Date(),
+      );
+      expect(affected).toHaveLength(0);
+    });
+
+    test("should revokeAllForUser return empty array for nonexistent user", async () => {
+      if (!adapter.revokeAllForUser) return;
+
+      const affected = await adapter.revokeAllForUser(
+        "nonexistent",
+        SessionReasonCode.ADMIN_REVOKED,
+        new Date(),
+      );
+      expect(affected).toHaveLength(0);
+    });
+
+    test("should findLiveSessionsForUser return only ACTIVE and ROTATED sessions", async () => {
+      if (!adapter.findLiveSessionsForUser) return;
+
+      const userId = uuidv4();
+      const now = new Date();
+      await adapter.create(
+        createMockRecord({ id: "active-1", userId, status: SessionStatus.ACTIVE }),
+      );
+      await adapter.create(
+        createMockRecord({ id: "rotated-1", userId, status: SessionStatus.ROTATED }),
+      );
+      await adapter.create(
+        createMockRecord({
+          id: "revoked-1",
+          userId,
+          status: SessionStatus.REVOKED,
+          revokedAt: now,
+          revocationReason: SessionReasonCode.MANUAL_LOGOUT,
+        }),
+      );
+      await adapter.create(
+        createMockRecord({
+          id: "expired-1",
+          userId,
+          status: SessionStatus.EXPIRED,
+        }),
+      );
+
+      const live = await adapter.findLiveSessionsForUser(userId);
+      const liveIds = live.map((s) => s.id);
+
+      expect(liveIds).toContain("active-1");
+      expect(liveIds).toContain("rotated-1");
+      expect(liveIds).not.toContain("revoked-1");
+      expect(liveIds).not.toContain("expired-1");
+    });
+
+    test("should findLiveSessionsForUser return empty for nonexistent user", async () => {
+      if (!adapter.findLiveSessionsForUser) return;
+
+      const live = await adapter.findLiveSessionsForUser("nonexistent");
+      expect(live).toHaveLength(0);
+    });
+
+    test("should findLiveSessionsForUser not return sessions from other users", async () => {
+      if (!adapter.findLiveSessionsForUser) return;
+
+      const userId = uuidv4();
+      const otherUserId = uuidv4();
+      await adapter.create(createMockRecord({ id: "mine", userId }));
+      await adapter.create(createMockRecord({ id: "theirs", userId: otherUserId }));
+
+      const live = await adapter.findLiveSessionsForUser(userId);
+      expect(live).toHaveLength(1);
+      expect(live[0].id).toBe("mine");
+    });
+
+    test("should findLiveSessionsForUser exclude expired ROTATED sessions", async () => {
+      if (!adapter.findLiveSessionsForUser) return;
+
+      const userId = uuidv4();
+      const now = new Date();
+      // Active session — not expired
+      await adapter.create(
+        createMockRecord({ id: "active-1", userId, status: SessionStatus.ACTIVE }),
+      );
+      // Rotated session — not expired (expiresAt in future)
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-live",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() + 3600000),
+        }),
+      );
+      // Rotated session — expired (expiresAt in past)
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-expired",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() - 1000),
+        }),
+      );
+
+      const live = await adapter.findLiveSessionsForUser(userId);
+      const liveIds = live.map((s) => s.id);
+
+      expect(liveIds).toContain("active-1");
+      expect(liveIds).toContain("rotated-live");
+      expect(liveIds).not.toContain("rotated-expired");
+    });
+
+    test("should revokeAllForUser include ROTATED sessions", async () => {
+      if (!adapter.revokeAllForUser) return;
+
+      const userId = uuidv4();
+      const now = new Date();
+      await adapter.create(
+        createMockRecord({ id: "active-1", userId, status: SessionStatus.ACTIVE }),
+      );
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-1",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() + 3600000),
+        }),
+      );
+
+      const affected = await adapter.revokeAllForUser(
+        userId,
+        SessionReasonCode.ADMIN_REVOKED,
+        new Date(),
+      );
+
+      expect(affected).toContain("active-1");
+      expect(affected).toContain("rotated-1");
+
+      const rotated = await adapter.findById("rotated-1");
+      expect(rotated?.status).toBe(SessionStatus.REVOKED);
+    });
   });
 }

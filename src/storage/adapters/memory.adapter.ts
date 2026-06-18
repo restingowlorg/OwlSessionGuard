@@ -2,6 +2,7 @@ import { SessionStoreAdapter } from "../contracts";
 import {
   SessionRecord,
   SessionStatus,
+  SessionReasonCode,
   SessionListParams,
   SessionListResult,
 } from "../../types";
@@ -96,6 +97,50 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
         this.sessions.delete(id);
       }
     }
+  }
+
+  async revokeAllForUser(
+    userId: string,
+    reason: SessionReasonCode,
+    revokedAt: Date,
+  ): Promise<string[]> {
+    const affected: string[] = [];
+    for (const [id, session] of this.sessions.entries()) {
+      if (
+        session.userId === userId &&
+        session.status !== SessionStatus.REVOKED
+      ) {
+        this.sessions.set(id, {
+          ...session,
+          status: SessionStatus.REVOKED,
+          revokedAt,
+          revocationReason: reason,
+        });
+        affected.push(id);
+      }
+    }
+    return affected;
+  }
+
+  /**
+   * WHY: Returns only ACTIVE + ROTATED sessions. Excludes REVOKED and EXPIRED
+   * to avoid loading audit-piled revoked sessions into memory.
+   * No pagination — bounded by maxSessionsPerUser (typically 5-10).
+   */
+  async findLiveSessionsForUser(userId: string): Promise<SessionRecord[]> {
+    const now = new Date();
+    const live: SessionRecord[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.userId !== userId) continue;
+      if (session.status === SessionStatus.REVOKED) continue;
+      if (session.status === SessionStatus.EXPIRED) continue;
+      // WHY: Both ACTIVE and ROTATED sessions must be checked for expiration.
+      // ACTIVE: expired absolute/idle timeouts are stale.
+      // ROTATED: expired absolute timeout means the grace period is moot.
+      if (session.expiresAt <= now || session.idleExpiresAt <= now) continue;
+      live.push({ ...session });
+    }
+    return live;
   }
 
   async countActiveForUser(userId: string): Promise<number> {

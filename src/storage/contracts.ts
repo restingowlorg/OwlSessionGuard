@@ -1,4 +1,9 @@
-import { SessionRecord, SessionListParams, SessionListResult } from "../types";
+import {
+  SessionRecord,
+  SessionListParams,
+  SessionListResult,
+  SessionReasonCode,
+} from "../types";
 
 /**
  * SessionStoreAdapter — Uniform interface for all session storage backends.
@@ -85,4 +90,25 @@ export interface SessionStoreAdapter {
    * Optional: Check if a concurrency lock is currently active.
    */
   isLocked?(key: string): Promise<boolean>;
+
+  /**
+   * Optional: Retrieve all "live" (non-terminal) sessions for a user.
+   * WHY: Returns only ACTIVE + ROTATED sessions. Excludes REVOKED and EXPIRED.
+   * Used by SelectiveRevocationEngine to avoid loading audit-piled revoked sessions.
+   * No pagination — bounded by maxSessionsPerUser config (typically 5-10).
+   * Adapters that don't implement this fall back to findAllForUser() + filter.
+   */
+  findLiveSessionsForUser?(userId: string): Promise<SessionRecord[]>;
+
+  /**
+   * Optional: Soft-revoke all sessions for a user (status → REVOKED).
+   * WHY: Atomic bulk soft-revoke preserves audit trail. Adapters that don't implement
+   * this fall back to findAllForUser() + update() loop in SelectiveRevocationEngine.
+   * @returns IDs of sessions that were soft-revoked (excludes already-revoked sessions).
+   */
+  revokeAllForUser?(
+    userId: string,
+    reason: SessionReasonCode,
+    revokedAt: Date,
+  ): Promise<string[]>;
 }
