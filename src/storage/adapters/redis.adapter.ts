@@ -433,6 +433,78 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       await writePipeline.exec();
     } while (entries.length >= this.batchSize);
 
+    // WHY: The sorted set only contains ACTIVE sessions. ROTATED sessions are
+    // removed from the set during rotation but are still live within their grace
+    // period. We must SCAN for them to ensure revokeAll truly revokes ALL live
+    // sessions, not just ACTIVE ones. Safety bounds (timeout + max iterations)
+    // prevent runaway scans on large Redis instances.
+    const affectedSet = new Set(affected);
+    const pattern = this.key("sess", "*");
+    let cursorVal: string | undefined;
+    let scanned = 0;
+    const SCAN_BATCH = 100;
+    const SCAN_TIMEOUT_MS = 5000;
+    const SCAN_MAX_KEYS = 10000;
+    const scanStart = Date.now();
+
+    do {
+      const result = await this.redis.scan(
+        cursorVal === undefined ? "0" : cursorVal,
+        "MATCH",
+        pattern,
+        "COUNT",
+        SCAN_BATCH,
+      );
+      cursorVal = result[0];
+      const keys = result[1];
+      scanned += keys.length;
+
+      if (keys.length > 0) {
+        const newKeys = keys.filter((k) => {
+          const id = k.split(":").pop()!;
+          return !affectedSet.has(id);
+        });
+
+        if (newKeys.length > 0) {
+          const readPipeline = this.redis.pipeline();
+          for (const k of newKeys) readPipeline.get(k);
+          const scanResults = await readPipeline.exec();
+          if (scanResults) {
+            const writePipeline = this.redis.pipeline();
+            for (const r of scanResults) {
+              if (!r || r[0] || !r[1]) continue;
+              const record = this.parseRecord(r[1] as string);
+              if (
+                record.userId !== userId ||
+                record.status !== SessionStatus.ROTATED
+              )
+                continue;
+              // WHY: Skip expired ROTATED sessions — grace period is moot if
+              // the session already expired by absolute timeout.
+              if (record.expiresAt.getTime() <= Date.now()) continue;
+
+              record.status = SessionStatus.REVOKED;
+              record.revokedAt = revokedAt;
+              record.revocationReason = reason;
+              const ttl = this.calculateTTL(record.expiresAt);
+
+              writePipeline.set(
+                this.key("sess", record.id),
+                JSON.stringify(record),
+                "EX",
+                ttl,
+              );
+              affected.push(record.id);
+            }
+            await writePipeline.exec();
+          }
+        }
+      }
+
+      if (Date.now() - scanStart > SCAN_TIMEOUT_MS) break;
+      if (scanned > SCAN_MAX_KEYS) break;
+    } while (cursorVal !== "0");
+
     return affected;
   }
 
@@ -524,6 +596,9 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
                 record.userId === userId &&
                 record.status === SessionStatus.ROTATED
               ) {
+                // WHY: ROTATED sessions with expired absolute timeout are stale —
+                // the grace period is moot if the session already expired.
+                if (record.expiresAt.getTime() <= now) continue;
                 live.push(record);
               }
             }

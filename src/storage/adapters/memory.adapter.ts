@@ -134,10 +134,10 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       if (session.userId !== userId) continue;
       if (session.status === SessionStatus.REVOKED) continue;
       if (session.status === SessionStatus.EXPIRED) continue;
-      // WHY: Expired ACTIVE sessions should be treated as non-live.
-      if (session.status === SessionStatus.ACTIVE) {
-        if (session.expiresAt <= now || session.idleExpiresAt <= now) continue;
-      }
+      // WHY: Both ACTIVE and ROTATED sessions must be checked for expiration.
+      // ACTIVE: expired absolute/idle timeouts are stale.
+      // ROTATED: expired absolute timeout means the grace period is moot.
+      if (session.expiresAt <= now || session.idleExpiresAt <= now) continue;
       live.push({ ...session });
     }
     return live;

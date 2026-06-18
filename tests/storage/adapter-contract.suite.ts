@@ -344,5 +344,71 @@ export function runAdapterContractTests(
       expect(live).toHaveLength(1);
       expect(live[0].id).toBe("mine");
     });
+
+    test("should findLiveSessionsForUser exclude expired ROTATED sessions", async () => {
+      if (!adapter.findLiveSessionsForUser) return;
+
+      const userId = uuidv4();
+      const now = new Date();
+      // Active session — not expired
+      await adapter.create(
+        createMockRecord({ id: "active-1", userId, status: SessionStatus.ACTIVE }),
+      );
+      // Rotated session — not expired (expiresAt in future)
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-live",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() + 3600000),
+        }),
+      );
+      // Rotated session — expired (expiresAt in past)
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-expired",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() - 1000),
+        }),
+      );
+
+      const live = await adapter.findLiveSessionsForUser(userId);
+      const liveIds = live.map((s) => s.id);
+
+      expect(liveIds).toContain("active-1");
+      expect(liveIds).toContain("rotated-live");
+      expect(liveIds).not.toContain("rotated-expired");
+    });
+
+    test("should revokeAllForUser include ROTATED sessions", async () => {
+      if (!adapter.revokeAllForUser) return;
+
+      const userId = uuidv4();
+      const now = new Date();
+      await adapter.create(
+        createMockRecord({ id: "active-1", userId, status: SessionStatus.ACTIVE }),
+      );
+      await adapter.create(
+        createMockRecord({
+          id: "rotated-1",
+          userId,
+          status: SessionStatus.ROTATED,
+          expiresAt: new Date(now.getTime() + 3600000),
+        }),
+      );
+
+      const affected = await adapter.revokeAllForUser(
+        userId,
+        SessionReasonCode.ADMIN_REVOKED,
+        new Date(),
+      );
+
+      expect(affected).toContain("active-1");
+      expect(affected).toContain("rotated-1");
+
+      const rotated = await adapter.findById("rotated-1");
+      expect(rotated?.status).toBe(SessionStatus.REVOKED);
+    });
   });
 }
