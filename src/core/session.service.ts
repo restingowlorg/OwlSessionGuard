@@ -99,9 +99,8 @@ export class SessionService implements ISessionService {
       record: SessionRecord;
     }>
   > {
+    const maxSessions = this.resolveMaxSessions(params.roles || []);
     try {
-      const maxSessions = this.config.limits.maxSessionsPerUser;
-
       const { token, tokenHash } = this.generateSecureToken();
 
       const now = new Date();
@@ -185,7 +184,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          `User exceeded maximum session limit (${maxSessions})`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -316,6 +315,8 @@ export class SessionService implements ISessionService {
       }
     }
 
+    const maxSessions = this.resolveMaxSessions(record.roles);
+
     try {
       const { token: newToken, tokenHash: newTokenHash } =
         this.generateSecureToken();
@@ -340,12 +341,7 @@ export class SessionService implements ISessionService {
       };
 
       // Atomic rotation in database adapter
-      await this.store.rotate(
-        record.id,
-        newRecord,
-        oldUpdates,
-        this.config.limits.maxSessionsPerUser,
-      );
+      await this.store.rotate(record.id, newRecord, oldUpdates, maxSessions);
 
       // Emit rotation success event
       this.emitEvent("session.rotated", {
@@ -364,7 +360,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          `User exceeded maximum session limit (${maxSessions})`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -705,6 +701,29 @@ export class SessionService implements ISessionService {
       actualUserAgent: params.context?.userAgent,
       timestamp: new Date(),
     });
+  }
+
+  /**
+   * Resolves the effective max-sessions limit for a set of roles.
+   * WHY: Role-based policy constraints — high-privilege roles get tighter limits.
+   * Iterates the consumer-configured maxSessionsPerRole map, picks the most
+   * restrictive (minimum) matching limit, and falls back to maxSessionsPerUser.
+   */
+  private resolveMaxSessions(roles: string[]): number {
+    const roleLimits = this.config.limits.maxSessionsPerRole;
+    if (!roleLimits) return this.config.limits.maxSessionsPerUser;
+
+    let minLimit = Infinity;
+    for (const role of roles) {
+      const limit = roleLimits[role];
+      if (limit !== undefined && limit < minLimit) {
+        minLimit = limit;
+      }
+    }
+
+    return minLimit === Infinity
+      ? this.config.limits.maxSessionsPerUser
+      : minLimit;
   }
 
   /**
