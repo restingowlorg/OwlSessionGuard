@@ -17,6 +17,7 @@ import {
   SecurityEvaluationResult,
   SessionSnapshot,
   SessionListParams,
+  SessionLimits,
   DeviceOS,
   DeviceBrowser,
   DeviceType,
@@ -99,7 +100,7 @@ export class SessionService implements ISessionService {
       record: SessionRecord;
     }>
   > {
-    const maxSessions = this.resolveMaxSessions(params.roles || []);
+    const limits = this.resolveLimits();
     try {
       const { token, tokenHash } = this.generateSecureToken();
 
@@ -166,7 +167,7 @@ export class SessionService implements ISessionService {
         });
       }
 
-      await this.store.create(record, maxSessions);
+      await this.store.create(record, limits);
 
       // Emit session creation event
       this.emitEvent("session.created", {
@@ -184,7 +185,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${maxSessions})`,
+          `User exceeded maximum session limit`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -315,7 +316,7 @@ export class SessionService implements ISessionService {
       }
     }
 
-    const maxSessions = this.resolveMaxSessions(record.roles);
+    const limits = this.resolveLimits();
 
     try {
       const { token: newToken, tokenHash: newTokenHash } =
@@ -331,6 +332,7 @@ export class SessionService implements ISessionService {
         createdAt: now,
         lastUsedAt: now,
         parentSessionId: record.id,
+        ...(params.roles ? { roles: params.roles } : {}),
       };
 
       const oldUpdates: Partial<SessionRecord> = {
@@ -341,7 +343,13 @@ export class SessionService implements ISessionService {
       };
 
       // Atomic rotation in database adapter
-      await this.store.rotate(record.id, newRecord, oldUpdates, maxSessions);
+      await this.store.rotate(
+        record.id,
+        newRecord,
+        oldUpdates,
+        limits,
+        record.roles,
+      );
 
       // Emit rotation success event
       this.emitEvent("session.rotated", {
@@ -360,7 +368,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${maxSessions})`,
+          `User exceeded maximum session limit`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -704,26 +712,18 @@ export class SessionService implements ISessionService {
   }
 
   /**
-   * Resolves the effective max-sessions limit for a set of roles.
-   * WHY: Role-based policy constraints — high-privilege roles get tighter limits.
-   * Iterates the consumer-configured maxSessionsPerRole map, picks the most
-   * restrictive (minimum) matching limit, and falls back to maxSessionsPerUser.
+   * Resolves the effective session limits for a set of roles.
+   * WHY: Returns a full SessionLimits object so the store adapter can enforce
+   * BOTH the global user cap and per-role caps in a single atomic operation.
+   * The global cap is ALWAYS the configured maxSessionsPerUser.
+   * Role-specific limits are independent counters — the store checks both
+   * caps and rejects if EITHER is exceeded.
    */
-  private resolveMaxSessions(roles: string[]): number {
-    const roleLimits = this.config.limits.maxSessionsPerRole;
-    if (!roleLimits) return this.config.limits.maxSessionsPerUser;
-
-    let minLimit = Infinity;
-    for (const role of roles) {
-      const limit = roleLimits[role];
-      if (limit !== undefined && limit < minLimit) {
-        minLimit = limit;
-      }
-    }
-
-    return minLimit === Infinity
-      ? this.config.limits.maxSessionsPerUser
-      : minLimit;
+  private resolveLimits(): SessionLimits {
+    return {
+      maxSessionsPerUser: this.config.limits.maxSessionsPerUser,
+      maxSessionsPerRole: this.config.limits.maxSessionsPerRole,
+    };
   }
 
   /**

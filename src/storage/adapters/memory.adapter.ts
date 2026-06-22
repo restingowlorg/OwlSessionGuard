@@ -5,6 +5,7 @@ import {
   SessionReasonCode,
   SessionListParams,
   SessionListResult,
+  SessionLimits,
 } from "../../types";
 
 /**
@@ -15,12 +16,9 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
   private sessions = new Map<string, SessionRecord>();
   private locks = new Map<string, Date>();
 
-  async create(record: SessionRecord, maxSessions?: number): Promise<void> {
-    if (maxSessions && maxSessions > 0) {
-      const activeCount = await this.countActiveForUser(record.userId);
-      if (activeCount >= maxSessions) {
-        throw new Error("SESSION_LIMIT_REACHED");
-      }
+  async create(record: SessionRecord, limits?: SessionLimits): Promise<void> {
+    if (limits) {
+      this.checkLimits(record.userId, limits, record.roles, ">=");
     }
     this.sessions.set(record.id, { ...record });
   }
@@ -29,7 +27,8 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
     oldId: string,
     newRecord: SessionRecord,
     oldUpdates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
+    oldRoles?: string[],
   ): Promise<void> {
     const oldRecord = this.sessions.get(oldId);
     if (!oldRecord) throw new Error("SESSION_NOT_FOUND");
@@ -37,12 +36,17 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       throw new Error("SESSION_NOT_ACTIVE");
 
     // Atomic limit check for the NEW session
-    if (maxSessions && maxSessions > 0) {
-      const activeCount = await this.countActiveForUser(oldRecord.userId);
-      // Because this is a 1-to-1 replacement, we only fail if they are strictly OVER the limit.
-      if (activeCount > maxSessions) {
-        throw new Error("SESSION_LIMIT_REACHED");
-      }
+    // WHY: Per-role comparator selection:
+    //   - Roles in BOTH old and new: ">" (1-to-1 replacement, old session will be removed)
+    //   - Roles ONLY in new: ">=" (net increase, old session doesn't count against new role)
+    if (limits) {
+      this.checkLimits(
+        oldRecord.userId,
+        limits,
+        newRecord.roles,
+        ">",
+        oldRoles || oldRecord.roles,
+      );
     }
 
     this.sessions.set(oldId, { ...oldRecord, ...oldUpdates });
@@ -66,7 +70,7 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
   async update(
     id: string,
     updates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
   ): Promise<void> {
     const record = this.sessions.get(id);
     if (!record) return;
@@ -78,9 +82,8 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       newRecord.status === SessionStatus.ACTIVE &&
       record.status !== SessionStatus.ACTIVE
     ) {
-      const activeCount = await this.countActiveForUser(record.userId);
-      if (maxSessions && maxSessions > 0 && activeCount >= maxSessions) {
-        throw new Error("SESSION_LIMIT_REACHED");
+      if (limits) {
+        this.checkLimits(record.userId, limits, newRecord.roles, ">=");
       }
     }
 
@@ -141,6 +144,92 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       live.push({ ...session });
     }
     return live;
+  }
+
+  /**
+   * Check both global and per-role limits atomically.
+   * WHY: Single enforcement path for create (>=), rotate (per-role), and
+   * update operations.
+   * @param op Default comparison operator — ">=" for create, ">" for rotation
+   * @param oldRoles Roles of the old session during rotation — used for per-role
+   *   comparator selection. Roles in BOTH old and new use ">" (1-to-1 replacement).
+   *   Roles ONLY in new use ">=" (net increase).
+   */
+  private checkLimits(
+    userId: string,
+    limits: SessionLimits,
+    roles: string[],
+    op: ">=" | ">",
+    oldRoles?: string[],
+  ): void {
+    const activeCount = this.countActiveForUserSync(userId);
+    if (limits.maxSessionsPerUser > 0) {
+      if (
+        op === ">="
+          ? activeCount >= limits.maxSessionsPerUser
+          : activeCount > limits.maxSessionsPerUser
+      ) {
+        throw new Error("SESSION_LIMIT_REACHED");
+      }
+    }
+    if (limits.maxSessionsPerRole) {
+      for (const role of roles) {
+        const roleLimit = limits.maxSessionsPerRole[role];
+        if (roleLimit !== undefined) {
+          const roleCount = this.countActiveForUserByRoleSync(userId, role);
+          // Per-role comparator: if old session has this role, use ">" (1-to-1 replacement).
+          // If old session doesn't have this role, use ">=" (net increase).
+          const roleOp = oldRoles?.includes(role) ? ">" : ">=";
+          if (
+            roleOp === ">=" ? roleCount >= roleLimit : roleCount > roleLimit
+          ) {
+            throw new Error("SESSION_LIMIT_REACHED");
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Synchronous count of active sessions for a user.
+   * WHY: Avoids async overhead in the memory adapter's enforceLimits path.
+   */
+  private countActiveForUserSync(userId: string): number {
+    let count = 0;
+    const now = new Date();
+    for (const session of this.sessions.values()) {
+      if (
+        session.userId === userId &&
+        session.status === SessionStatus.ACTIVE &&
+        session.expiresAt > now &&
+        session.idleExpiresAt > now
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Count active sessions for a user that include a specific role.
+   * WHY: Role-specific limits are independent counters — only sessions with
+   * the matching role count against that role's limit.
+   */
+  private countActiveForUserByRoleSync(userId: string, role: string): number {
+    let count = 0;
+    const now = new Date();
+    for (const session of this.sessions.values()) {
+      if (
+        session.userId === userId &&
+        session.roles.includes(role) &&
+        session.status === SessionStatus.ACTIVE &&
+        session.expiresAt > now &&
+        session.idleExpiresAt > now
+      ) {
+        count++;
+      }
+    }
+    return count;
   }
 
   async countActiveForUser(userId: string): Promise<number> {

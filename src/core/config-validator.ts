@@ -59,8 +59,26 @@ export class ConfigValidator {
       );
     }
 
-    if (maxSessionsPerRole) {
+    if (maxSessionsPerRole !== undefined) {
+      if (
+        maxSessionsPerRole === null ||
+        typeof maxSessionsPerRole !== "object" ||
+        Array.isArray(maxSessionsPerRole)
+      ) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'limits.maxSessionsPerRole' must be a plain object (Record<string, number>).\n" +
+            `[REMEDIATION]: Set 'config.limits.maxSessionsPerRole' to an object like { "ADMIN": 2 } (received: ${maxSessionsPerRole === null ? "null" : typeof maxSessionsPerRole}).`,
+        );
+      }
+
       for (const [role, limit] of Object.entries(maxSessionsPerRole)) {
+        if (!role || role.trim() === "") {
+          throw new FatalSecurityError(
+            "CONFIGURATION ERROR: 'limits.maxSessionsPerRole' contains an empty or whitespace-only role key.\n" +
+              "[REMEDIATION]: Remove empty role keys or set them to valid non-empty strings.",
+          );
+        }
+
         if (limit <= 0 || !Number.isInteger(limit)) {
           throw new FatalSecurityError(
             `CONFIGURATION ERROR: 'limits.maxSessionsPerRole["${role}"]' must be a positive integer.\n` +

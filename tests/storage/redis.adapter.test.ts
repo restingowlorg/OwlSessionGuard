@@ -19,13 +19,14 @@ runAdapterContractTests(
 
     /**
      * Polyfill: ossecCreateSession
-     * Atomic creation with native time sync and limit enforcement.
+     * Atomic creation with native time sync and dual limit enforcement.
      */
     // @ts-expect-error - Custom Lua polyfill
     redis.ossecCreateSession = async (
       userKey: string,
       sessKey: string,
       tokenKey: string,
+      rolePrefix: string,
       maxSessions: number,
       recordJson: string,
       id: string,
@@ -34,6 +35,8 @@ runAdapterContractTests(
       score: number,
       maxAbsTtl: number,
       status: string,
+      rolesJson: string,
+      roleLimitsJson: string,
     ) => {
       const now = Date.now();
 
@@ -42,6 +45,23 @@ runAdapterContractTests(
         const count = await redis.zcount(userKey, String(now), "+inf");
         if (count >= maxSessions) {
           throw new Error("ERR_SESSION_LIMIT_REACHED");
+        }
+      }
+
+      // Role-specific limit check
+      const roles: string[] = JSON.parse(rolesJson);
+      const roleLimits: Record<string, number> = JSON.parse(roleLimitsJson);
+      if (status === "active") {
+        for (const role of roles) {
+          const roleLimit = roleLimits[role];
+          if (roleLimit && roleLimit > 0) {
+            const roleKey = rolePrefix + role;
+            await redis.zremrangebyscore(roleKey, "-inf", String(now));
+            const roleCount = await redis.zcount(roleKey, String(now), "+inf");
+            if (roleCount >= roleLimit) {
+              throw new Error("ERR_SESSION_LIMIT_REACHED");
+            }
+          }
         }
       }
 
@@ -56,23 +76,32 @@ runAdapterContractTests(
       if (status === "active") {
         await redis.zadd(userKey, String(score), `${id}:${tokenHash}`);
         await redis.expire(userKey, maxAbsTtl);
+        // Index into role-specific sorted sets
+        for (const role of roles) {
+          const roleKey = rolePrefix + role;
+          await redis.zadd(roleKey, String(score), `${id}:${tokenHash}`);
+          await redis.expire(roleKey, maxAbsTtl);
+        }
       }
       return 1;
     };
 
     /**
      * Polyfill: ossecUpdateSession
-     * Atomic update with native time sync and rotation guard.
+     * Atomic update with native time sync, dual limit enforcement, and rotation guard.
      */
     // @ts-expect-error - Custom Lua polyfill
     redis.ossecUpdateSession = async (
       sessKey: string,
       userKey: string,
+      rolePrefix: string,
       updatesJson: string,
       ttl: number,
       score: number,
       tokenPrefix: string,
       maxSessions: number,
+      rolesJson: string,
+      roleLimitsJson: string,
       maxAbsTtl: number,
     ) => {
       const data = await redis.get(sessKey);
@@ -85,6 +114,7 @@ runAdapterContractTests(
       const updatedRecord = { ...record, ...updates };
       const newTokenHash = updatedRecord.tokenHash;
       const status = updatedRecord.status;
+      const roles: string[] = updatedRecord.roles || [];
 
       const now = Date.now();
 
@@ -95,6 +125,22 @@ runAdapterContractTests(
           const count = await redis.zcount(userKey, String(now), "+inf");
           if (count >= maxSessions) {
             throw new Error("ERR_SESSION_LIMIT_REACHED");
+          }
+        }
+
+        // Role-specific limit check when becoming active
+        if (oldStatus !== "active") {
+          const roleLimits: Record<string, number> = JSON.parse(roleLimitsJson);
+          for (const role of roles) {
+            const roleLimit = roleLimits[role];
+            if (roleLimit && roleLimit > 0) {
+              const roleKey = rolePrefix + role;
+              await redis.zremrangebyscore(roleKey, "-inf", String(now));
+              const roleCount = await redis.zcount(roleKey, String(now), "+inf");
+              if (roleCount >= roleLimit) {
+                throw new Error("ERR_SESSION_LIMIT_REACHED");
+              }
+            }
           }
         }
       }
@@ -112,9 +158,26 @@ runAdapterContractTests(
         }
         await redis.zadd(userKey, String(score), `${updatedRecord.id}:${newTokenHash}`);
         await redis.expire(userKey, maxAbsTtl);
+
+        // Update role indices
+        for (const role of roles) {
+          const roleKey = rolePrefix + role;
+          if (oldTokenHash !== newTokenHash) {
+            await redis.zrem(roleKey, `${updatedRecord.id}:${oldTokenHash}`);
+          }
+          await redis.zadd(roleKey, String(score), `${updatedRecord.id}:${newTokenHash}`);
+          await redis.expire(roleKey, maxAbsTtl);
+        }
       } else {
         await redis.zrem(userKey, `${updatedRecord.id}:${oldTokenHash}`);
         await redis.zrem(userKey, `${updatedRecord.id}:${newTokenHash}`);
+
+        // Remove from role indices
+        for (const role of roles) {
+          const roleKey = rolePrefix + role;
+          await redis.zrem(roleKey, `${updatedRecord.id}:${oldTokenHash}`);
+          await redis.zrem(roleKey, `${updatedRecord.id}:${newTokenHash}`);
+        }
       }
 
       return 1;
@@ -122,7 +185,7 @@ runAdapterContractTests(
 
     /**
      * Polyfill: ossecRotateSession
-     * Atomic session rotation (1-to-1 replacement).
+     * Atomic session rotation (1-to-1 replacement) with per-role limit enforcement.
      */
     // @ts-expect-error - Custom Lua polyfill
     redis.ossecRotateSession = async (
@@ -131,6 +194,7 @@ runAdapterContractTests(
       userKey: string,
       newSessKey: string,
       newTokenKey: string,
+      rolePrefix: string,
       maxSessions: number,
       oldUpdateJson: string,
       newRecordJson: string,
@@ -139,6 +203,11 @@ runAdapterContractTests(
       ttl: number,
       score: number,
       maxAbsTtl: number,
+      oldTokenHash: string,
+      oldId: string,
+      rolesJson: string,
+      roleLimitsJson: string,
+      oldRolesJson: string,
     ) => {
       const data = await redis.get(oldSessKey);
       if (!data) throw new Error("ERR_SESSION_NOT_FOUND");
@@ -148,9 +217,37 @@ runAdapterContractTests(
       const now = Date.now();
       await redis.zremrangebyscore(userKey, "-inf", String(now));
 
+      // Global limit check (1-to-1 replacement: use strict gt)
       if (maxSessions > 0) {
         const count = await redis.zcount(userKey, String(now), "+inf");
-        if (count >= maxSessions) throw new Error("ERR_SESSION_LIMIT_REACHED");
+        if (count > maxSessions) throw new Error("ERR_SESSION_LIMIT_REACHED");
+      }
+
+      // Role-specific limit check with per-role comparator selection
+      // WHY: Roles in BOTH old and new use ">" (1-to-1 replacement).
+      //       Roles ONLY in new use ">=" (net increase, old session doesn't count).
+      const roles: string[] = JSON.parse(rolesJson);
+      const roleLimits: Record<string, number> = JSON.parse(roleLimitsJson);
+      const oldRoles: string[] = JSON.parse(oldRolesJson);
+      const oldRolesSet = new Set(oldRoles);
+      for (const role of roles) {
+        const roleLimit = roleLimits[role];
+        if (roleLimit && roleLimit > 0) {
+          const roleKey = rolePrefix + role;
+          await redis.zremrangebyscore(roleKey, "-inf", String(now));
+          const roleCount = await redis.zcount(roleKey, String(now), "+inf");
+          // Per-role comparator: old session has this role → ">" (replacement)
+          // old session doesn't have this role → ">=" (net increase)
+          if (oldRolesSet.has(role)) {
+            if (roleCount > roleLimit) {
+              throw new Error("ERR_SESSION_LIMIT_REACHED");
+            }
+          } else {
+            if (roleCount >= roleLimit) {
+              throw new Error("ERR_SESSION_LIMIT_REACHED");
+            }
+          }
+        }
       }
 
       // Update OLD
@@ -158,23 +255,39 @@ runAdapterContractTests(
       await redis.unlink(oldTokenKey);
       await redis.zrem(userKey, `${record.id}:${record.tokenHash}`);
 
+      // Remove from role indices
+      if (record.roles) {
+        for (const role of record.roles) {
+          const roleKey = rolePrefix + role;
+          await redis.zrem(roleKey, `${record.id}:${record.tokenHash}`);
+        }
+      }
+
       // Create NEW
       await redis.set(newSessKey, newRecordJson, "EX", ttl);
       await redis.set(newTokenKey, newId, "EX", ttl);
       await redis.zadd(userKey, String(score), `${newId}:${newTokenHash}`);
       await redis.expire(userKey, maxAbsTtl);
 
+      // Index into role-specific sorted sets
+      for (const role of roles) {
+        const roleKey = rolePrefix + role;
+        await redis.zadd(roleKey, String(score), `${newId}:${newTokenHash}`);
+        await redis.expire(roleKey, maxAbsTtl);
+      }
+
       return 1;
     };
 
     /**
      * Polyfill: ossecDeleteSession
-     * Atomic annihilation of record and indices.
+     * Atomic annihilation of record and indices including role cleanup.
      */
     // @ts-expect-error - Custom Lua polyfill
     redis.ossecDeleteSession = async (
       sessKey: string,
       userKey: string,
+      rolePrefix: string,
       tokenPrefix: string,
     ) => {
       const data = await redis.get(sessKey);
@@ -184,6 +297,15 @@ runAdapterContractTests(
       await redis.unlink(sessKey);
       await redis.unlink(tokenPrefix + record.tokenHash);
       await redis.zrem(userKey, `${record.id}:${record.tokenHash}`);
+
+      // Clean up role indices
+      if (record.roles) {
+        for (const role of record.roles) {
+          const roleKey = rolePrefix + role;
+          await redis.zrem(roleKey, `${record.id}:${record.tokenHash}`);
+        }
+      }
+
       return 1;
     };
 

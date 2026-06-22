@@ -1,5 +1,5 @@
 import { SessionStoreAdapter } from "../../src/storage/contracts";
-import { SessionRecord, SessionStatus, SessionReasonCode } from "../../src/types";
+import { SessionRecord, SessionStatus, SessionReasonCode, SessionLimits } from "../../src/types";
 import { v4 as uuidv4 } from "uuid";
 
 /**
@@ -409,6 +409,105 @@ export function runAdapterContractTests(
 
       const rotated = await adapter.findById("rotated-1");
       expect(rotated?.status).toBe(SessionStatus.REVOKED);
+    });
+
+    // ── Role-Based Session Limit Tests ──────────────────────────────────
+
+    test("should enforce dual limits: global + role independently", async () => {
+      const userId = uuidv4();
+      const limits: SessionLimits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { ADMIN: 2 },
+      };
+
+      // Create 2 ADMIN sessions — hits ADMIN limit
+      await adapter.create(createMockRecord({ id: "a1", userId, roles: ["ADMIN"] }), limits);
+      await adapter.create(createMockRecord({ id: "a2", userId, roles: ["ADMIN"] }), limits);
+      await expect(
+        adapter.create(createMockRecord({ id: "a3", userId, roles: ["ADMIN"] }), limits)
+      ).rejects.toThrow("SESSION_LIMIT_REACHED");
+
+      // Global cap still allows more (5 total, only 2 used)
+      await adapter.create(createMockRecord({ id: "u1", userId, roles: ["USER"] }), limits);
+    });
+
+    test("should enforce global cap even when role limit is higher", async () => {
+      const userId = uuidv4();
+      const limits: SessionLimits = {
+        maxSessionsPerUser: 3,
+        maxSessionsPerRole: { ADMIN: 10 },
+      };
+
+      await adapter.create(createMockRecord({ id: "a1", userId, roles: ["ADMIN"] }), limits);
+      await adapter.create(createMockRecord({ id: "a2", userId, roles: ["ADMIN"] }), limits);
+      await adapter.create(createMockRecord({ id: "a3", userId, roles: ["ADMIN"] }), limits);
+
+      // Global cap (3) reached, even though ADMIN limit (10) not reached
+      await expect(
+        adapter.create(createMockRecord({ id: "a4", userId, roles: ["ADMIN"] }), limits)
+      ).rejects.toThrow("SESSION_LIMIT_REACHED");
+    });
+
+    test("should not count ordinary sessions against role limits", async () => {
+      const userId = uuidv4();
+      const limits: SessionLimits = {
+        maxSessionsPerUser: 10,
+        maxSessionsPerRole: { ADMIN: 1 },
+      };
+
+      // Create 1 ADMIN session — hits ADMIN limit
+      await adapter.create(createMockRecord({ id: "a1", userId, roles: ["ADMIN"] }), limits);
+      await expect(
+        adapter.create(createMockRecord({ id: "a2", userId, roles: ["ADMIN"] }), limits)
+      ).rejects.toThrow("SESSION_LIMIT_REACHED");
+
+      // Ordinary sessions (roles: []) don't count against ADMIN limit
+      await adapter.create(createMockRecord({ id: "o1", userId, roles: [] }), limits);
+      await adapter.create(createMockRecord({ id: "o2", userId, roles: [] }), limits);
+    });
+
+    test("should enforce role limits during rotation with role change", async () => {
+      const userId = uuidv4();
+      const limits: SessionLimits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { SUPER_ADMIN: 1 },
+      };
+
+      // Create 2 ordinary sessions
+      await adapter.create(createMockRecord({ id: "s1", userId, roles: [] }), limits);
+      await adapter.create(createMockRecord({ id: "s2", userId, roles: [] }), limits);
+
+      // Rotate s1 to SUPER_ADMIN — succeeds (no existing SUPER_ADMIN sessions)
+      const newRecord1 = createMockRecord({ id: "new1", userId, roles: ["SUPER_ADMIN"] });
+      await adapter.rotate("s1", newRecord1, { status: SessionStatus.ROTATED }, limits, []);
+
+      // Rotate s2 to SUPER_ADMIN — blocked (SUPER_ADMIN limit = 1, already have 1)
+      const newRecord2 = createMockRecord({ id: "new2", userId, roles: ["SUPER_ADMIN"] });
+      await expect(
+        adapter.rotate("s2", newRecord2, { status: SessionStatus.ROTATED }, limits, [])
+      ).rejects.toThrow("SESSION_LIMIT_REACHED");
+    });
+
+    test("should allow rotation with same roles (1-to-1 replacement)", async () => {
+      const userId = uuidv4();
+      const limits: SessionLimits = {
+        maxSessionsPerUser: 2,
+        maxSessionsPerRole: { ADMIN: 2 },
+      };
+
+      // Create 2 ADMIN sessions — at both limits
+      await adapter.create(createMockRecord({ id: "a1", userId, roles: ["ADMIN"] }), limits);
+      await adapter.create(createMockRecord({ id: "a2", userId, roles: ["ADMIN"] }), limits);
+
+      // Rotate a1 with same roles — should succeed (1-to-1 replacement, count stays 2)
+      const newRecord = createMockRecord({ id: "new1", userId, roles: ["ADMIN"] });
+      await adapter.rotate("a1", newRecord, { status: SessionStatus.ROTATED }, limits, ["ADMIN"]);
+
+      // Verify old is rotated, new is active
+      const old = await adapter.findById("a1");
+      expect(old?.status).toBe(SessionStatus.ROTATED);
+      const fresh = await adapter.findById("new1");
+      expect(fresh?.status).toBe(SessionStatus.ACTIVE);
     });
   });
 }
