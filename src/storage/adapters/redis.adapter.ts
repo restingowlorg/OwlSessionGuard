@@ -6,6 +6,7 @@ import {
   SessionReasonCode,
   SessionListParams,
   SessionListResult,
+  SessionLimits,
 } from "../../types";
 import { RedisStoreOptions } from "../../interfaces";
 
@@ -35,11 +36,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
   private registerLuaCommands() {
     this.redis.defineCommand("ossecCreateSession", {
-      numberOfKeys: 3, // [userKey, sessKey, tokenKey]
+      numberOfKeys: 4, // [userKey, sessKey, tokenKey, rolePrefix]
       lua: `
         local userKey = KEYS[1]
         local sessKey = KEYS[2]
         local tokenKey = KEYS[3]
+        local rolePrefix = KEYS[4]
         local maxSessions = tonumber(ARGV[1])
         local recordJson = ARGV[2]
         local recordId = ARGV[3]
@@ -48,11 +50,16 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         local score = tonumber(ARGV[6])
         local userIndexTtl = tonumber(ARGV[7])
         local status = ARGV[8]
+        local rolesJson = ARGV[9]
+        local roleLimitsJson = ARGV[10]
         
         local time = redis.call('TIME')
         local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
         
+        -- Purge expired entries
         redis.call('ZREMRANGEBYSCORE', userKey, '-inf', now)
+        
+        -- Global limit check
         if maxSessions > 0 and status == 'active' then
             local count = redis.call('ZCOUNT', userKey, now, '+inf')
             if count >= maxSessions then
@@ -60,6 +67,24 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
             end
         end
         
+        -- Role-specific limit check
+        local roles = cjson.decode(rolesJson)
+        local roleLimits = cjson.decode(roleLimitsJson)
+        if status == 'active' then
+            for _, role in ipairs(roles) do
+                local roleLimit = roleLimits[role]
+                if roleLimit and roleLimit > 0 then
+                    local roleKey = rolePrefix .. role
+                    redis.call('ZREMRANGEBYSCORE', roleKey, '-inf', now)
+                    local roleCount = redis.call('ZCOUNT', roleKey, now, '+inf')
+                    if roleCount >= roleLimit then
+                        return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
+                    end
+                end
+            end
+        end
+        
+        -- Persist session and indices
         local setOk = redis.call('SET', sessKey, recordJson, 'EX', ttl, 'NX')
         if not setOk then
             return redis.error_reply("ERR_SESSION_ALREADY_EXISTS")
@@ -69,6 +94,12 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         if status == 'active' then
             redis.call('ZADD', userKey, score, recordId .. ":" .. tokenHash)
             redis.call('EXPIRE', userKey, userIndexTtl)
+            -- Index into role-specific sorted sets
+            for _, role in ipairs(roles) do
+                local roleKey = rolePrefix .. role
+                redis.call('ZADD', roleKey, score, recordId .. ":" .. tokenHash)
+                redis.call('EXPIRE', roleKey, userIndexTtl)
+            end
         end
         return 1
       `,
@@ -82,7 +113,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
      * ARGV[9] = oldTokenHash, ARGV[10] = oldId (passed from TS to avoid pre-fetch round-trip)
      */
     this.redis.defineCommand("ossecRotateSession", {
-      numberOfKeys: 5, // [oldSessKey, oldTokenKey, userKey, newSessKey, newTokenKey]
+      numberOfKeys: 6, // [oldSessKey, oldTokenKey, userKey, newSessKey, newTokenKey, rolePrefix]
       lua: `
             -- 1. Retrieve the existing session record
             local data = redis.call('GET', KEYS[1])
@@ -105,39 +136,86 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
             local userIndexTtl = tonumber(ARGV[8])
             local oldTokenHash = ARGV[9]
             local oldId = ARGV[10]
+            local rolesJson = ARGV[11]
+            local roleLimitsJson = ARGV[12]
+            local oldRolesJson = ARGV[13]
             
             -- 4. Calculate the current timestamp in milliseconds
             local time = redis.call('TIME')
             local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
             
-            -- 5. Purge expired sessions and enforce the session limits for the new active session
+            -- 5. Purge expired sessions
             redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now)
+            
+            -- 6. Global limit check (1-to-1 replacement: use strict gt)
             if maxSessions > 0 then
                 local count = redis.call('ZCOUNT', KEYS[3], now, '+inf')
-                -- Note: The old session is still in the active count and will be removed.
-                -- Thus, net change in session count is 0 (old session deleted, new session added).
                 if count > maxSessions then
                     return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
                 end
             end
             
-            -- 6. Update the old session status to 'rotated' and update its token index
+            -- 7. Role-specific limit check with per-role comparator selection
+            -- WHY: Roles in BOTH old and new use ">" (1-to-1 replacement).
+            --       Roles ONLY in new use ">=" (net increase, old session doesn't count).
+            local roles = cjson.decode(rolesJson)
+            local roleLimits = cjson.decode(roleLimitsJson)
+            local oldRoles = cjson.decode(oldRolesJson)
+            local oldRolesSet = {}
+            for _, r in ipairs(oldRoles) do oldRolesSet[r] = true end
+            local rolePrefix = KEYS[6]
+            for _, role in ipairs(roles) do
+                local roleLimit = roleLimits[role]
+                if roleLimit and roleLimit > 0 then
+                    local roleKey = rolePrefix .. role
+                    redis.call('ZREMRANGEBYSCORE', roleKey, '-inf', now)
+                    local roleCount = redis.call('ZCOUNT', roleKey, now, '+inf')
+                    -- Per-role comparator: old session has this role → ">" (replacement)
+                    -- old session doesn't have this role → ">=" (net increase)
+                    if oldRolesSet[role] then
+                        if roleCount > roleLimit then
+                            return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
+                        end
+                    else
+                        if roleCount >= roleLimit then
+                            return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
+                        end
+                    end
+                end
+            end
+            
+            -- 8. Update the old session status to 'rotated' and update its token index
             redis.call('SET', KEYS[1], oldUpdateJson, 'EX', ttl)
             redis.call('EXPIRE', KEYS[2], ttl)
             redis.call('ZREM', KEYS[3], oldId .. ":" .. oldTokenHash)
             
-            -- 7. Persist the new active session and index it under the user's active set
+            -- Remove from role indices (reuse already-decoded record)
+            if record.roles then
+                for _, role in ipairs(record.roles) do
+                    local roleKey = rolePrefix .. role
+                    redis.call('ZREM', roleKey, oldId .. ":" .. oldTokenHash)
+                end
+            end
+            
+            -- 9. Persist the new active session and index it under the user's active set
             redis.call('SET', KEYS[4], newRecordJson, 'EX', ttl)
             redis.call('SET', KEYS[5], newId, 'EX', ttl)
             redis.call('ZADD', KEYS[3], score, newId .. ":" .. newTokenHash)
             redis.call('EXPIRE', KEYS[3], userIndexTtl)
+            
+            -- Index into role-specific sorted sets
+            for _, role in ipairs(roles) do
+                local roleKey = rolePrefix .. role
+                redis.call('ZADD', roleKey, score, newId .. ":" .. newTokenHash)
+                redis.call('EXPIRE', roleKey, userIndexTtl)
+            end
             
             return 1
         `,
     });
 
     this.redis.defineCommand("ossecUpdateSession", {
-      numberOfKeys: 2, // [sessKey, userKey]
+      numberOfKeys: 3, // [sessKey, userKey, rolePrefix]
       lua: `
         -- 1. Retrieve the existing session record
         local data = redis.call('GET', KEYS[1])
@@ -150,6 +228,10 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         local newScore = tonumber(ARGV[3])
         local tokenKeyPrefix = ARGV[4]
         local maxSessions = tonumber(ARGV[5])
+        local roles = cjson.decode(ARGV[6])
+        local roleLimits = cjson.decode(ARGV[7])
+        local userIndexTtl = tonumber(ARGV[8])
+        local rolePrefix = KEYS[3]
         
         local oldTokenHash = record.tokenHash
         local oldStatus = record.status
@@ -181,6 +263,21 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
                 end
             end
             
+            -- Role-specific limit check when becoming active
+            if oldStatus ~= 'active' then
+                for _, role in ipairs(roles) do
+                    local roleLimit = roleLimits[role]
+                    if roleLimit and roleLimit > 0 then
+                        local roleKey = rolePrefix .. role
+                        redis.call('ZREMRANGEBYSCORE', roleKey, '-inf', now)
+                        local roleCount = redis.call('ZCOUNT', roleKey, now, '+inf')
+                        if roleCount >= roleLimit then
+                            return redis.error_reply("ERR_SESSION_LIMIT_REACHED")
+                        end
+                    end
+                end
+            end
+            
             -- If token hash has rotated, remove old token entry from active list
             if oldTokenHash ~= newTokenHash then
                 redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
@@ -188,11 +285,28 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
             
             -- Add new token entry to active list and renew key expiry
             redis.call('ZADD', KEYS[2], newScore, record.id .. ":" .. newTokenHash)
-            redis.call('EXPIRE', KEYS[2], tonumber(ARGV[6]))
+            redis.call('EXPIRE', KEYS[2], userIndexTtl)
+            
+            -- Update role indices
+            for _, role in ipairs(roles) do
+                local roleKey = rolePrefix .. role
+                if oldTokenHash ~= newTokenHash then
+                    redis.call('ZREM', roleKey, record.id .. ":" .. oldTokenHash)
+                end
+                redis.call('ZADD', roleKey, newScore, record.id .. ":" .. newTokenHash)
+                redis.call('EXPIRE', roleKey, userIndexTtl)
+            end
         else
             -- If session has been deactivated (revoked/expired), remove token entries from active list
             redis.call('ZREM', KEYS[2], record.id .. ":" .. oldTokenHash)
             redis.call('ZREM', KEYS[2], record.id .. ":" .. newTokenHash)
+            
+            -- Remove from role indices
+            for _, role in ipairs(roles) do
+                local roleKey = rolePrefix .. role
+                redis.call('ZREM', roleKey, record.id .. ":" .. oldTokenHash)
+                redis.call('ZREM', roleKey, record.id .. ":" .. newTokenHash)
+            end
         end
         
         -- 7. Persist the updated session record back to Redis
@@ -209,7 +323,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     });
 
     this.redis.defineCommand("ossecDeleteSession", {
-      numberOfKeys: 2, // [sessKey, userKey]
+      numberOfKeys: 3, // [sessKey, userKey, rolePrefix]
       lua: `
         local data = redis.call('GET', KEYS[1])
         if not data then return 0 end
@@ -218,6 +332,16 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         redis.call('UNLINK', KEYS[1])
         redis.call('UNLINK', ARGV[1] .. record.tokenHash)
         redis.call('ZREM', KEYS[2], record.id .. ":" .. record.tokenHash)
+        
+        -- Remove from role indices
+        local rolePrefix = KEYS[3]
+        if record.roles then
+            for _, role in ipairs(record.roles) do
+                local roleKey = rolePrefix .. role
+                redis.call('ZREM', roleKey, record.id .. ":" .. record.tokenHash)
+            end
+        end
+        
         return 1
       `,
     });
@@ -227,9 +351,13 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     return `${this.prefix}${type}:${id}`;
   }
 
-  async create(record: SessionRecord, maxSessions?: number): Promise<void> {
+  async create(record: SessionRecord, limits?: SessionLimits): Promise<void> {
     const ttl = this.calculateTTL(record.expiresAt);
     if (ttl <= 0) return;
+
+    const maxSessions = limits?.maxSessionsPerUser || 0;
+    const rolesJson = JSON.stringify(record.roles || []);
+    const roleLimitsJson = JSON.stringify(limits?.maxSessionsPerRole || {});
 
     try {
       // @ts-expect-error - custom command
@@ -237,7 +365,8 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         this.key("idx:user", record.userId),
         this.key("sess", record.id),
         this.key("idx:token", record.tokenHash),
-        maxSessions || 0,
+        this.key("idx:role", record.userId) + ":",
+        maxSessions,
         JSON.stringify(record),
         record.id,
         record.tokenHash,
@@ -245,6 +374,8 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         record.expiresAt.getTime(),
         this.maxAbsTimeout,
         record.status,
+        rolesJson,
+        roleLimitsJson,
       );
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -263,16 +394,18 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     oldId: string,
     newRecord: SessionRecord,
     oldUpdates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
+    oldRoles?: string[],
   ): Promise<void> {
-    // Read the old record ONCE here to build the merged update JSON and derive
-    // key components. The Lua script reuses the passed-in fields directly,
-    // eliminating the redundant second GET that existed before inside Lua.
     const oldRecord = await this.findById(oldId);
     if (!oldRecord) throw new Error("SESSION_NOT_FOUND");
 
     const ttl = this.calculateTTL(newRecord.expiresAt);
     const mergedOldJson = JSON.stringify({ ...oldRecord, ...oldUpdates });
+    const maxSessions = limits?.maxSessionsPerUser || 0;
+    const rolesJson = JSON.stringify(newRecord.roles || []);
+    const roleLimitsJson = JSON.stringify(limits?.maxSessionsPerRole || {});
+    const oldRolesJson = JSON.stringify(oldRoles || oldRecord.roles || []);
 
     try {
       // @ts-expect-error - custom command
@@ -282,7 +415,8 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         this.key("idx:user", oldRecord.userId),
         this.key("sess", newRecord.id),
         this.key("idx:token", newRecord.tokenHash),
-        maxSessions || 0,
+        this.key("idx:role", oldRecord.userId) + ":",
+        maxSessions,
         mergedOldJson,
         JSON.stringify(newRecord),
         newRecord.id,
@@ -290,8 +424,11 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         ttl,
         newRecord.expiresAt.getTime(),
         this.maxAbsTimeout,
-        oldRecord.tokenHash, // ARGV[9]: passed to Lua to avoid re-decoding JSON
-        oldId, // ARGV[10]: passed to Lua to avoid re-decoding JSON
+        oldRecord.tokenHash,
+        oldId,
+        rolesJson,
+        roleLimitsJson,
+        oldRolesJson,
       );
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -319,24 +456,30 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
   async update(
     id: string,
     updates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
   ): Promise<void> {
     const record = await this.findById(id);
     if (!record) return;
 
     const newExpiresAt = updates.expiresAt || record.expiresAt;
     const ttl = this.calculateTTL(newExpiresAt);
+    const maxSessions = limits?.maxSessionsPerUser || 0;
+    const rolesJson = JSON.stringify(record.roles || []);
+    const roleLimitsJson = JSON.stringify(limits?.maxSessionsPerRole || {});
 
     try {
       // @ts-expect-error - custom command
       await this.redis.ossecUpdateSession(
         this.key("sess", id),
         this.key("idx:user", record.userId),
+        this.key("idx:role", record.userId) + ":",
         JSON.stringify(updates),
         ttl,
         new Date(newExpiresAt).getTime(),
         this.prefix + "idx:token:",
-        maxSessions || 0,
+        maxSessions,
+        rolesJson,
+        roleLimitsJson,
         this.maxAbsTimeout,
       );
     } catch (error: unknown) {
@@ -358,25 +501,45 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     await this.redis.ossecDeleteSession(
       this.key("sess", id),
       this.key("idx:user", record.userId),
+      this.key("idx:role", record.userId) + ":",
       this.prefix + "idx:token:",
     );
   }
 
   async deleteAllForUser(userId: string): Promise<void> {
     const userKey = this.key("idx:user", userId);
+    const rolePrefix = this.key("idx:role", userId) + ":";
     let entries: string[];
     do {
       entries = await this.redis.zrange(userKey, 0, this.batchSize - 1);
       if (entries.length === 0) break;
 
-      const deletePipeline = this.redis.pipeline();
+      // Read sessions to get role info for cleanup
+      const readPipeline = this.redis.pipeline();
       for (const entry of entries) {
-        const [id, tokenHash] = entry.split(":");
+        const [id] = entry.split(":");
+        readPipeline.get(this.key("sess", id));
+      }
+      const results = await readPipeline.exec();
+
+      const deletePipeline = this.redis.pipeline();
+      for (let i = 0; i < entries.length; i++) {
+        const [id, tokenHash] = entries[i].split(":");
         deletePipeline.unlink(this.key("sess", id));
         if (tokenHash) {
           deletePipeline.unlink(this.key("idx:token", tokenHash));
         }
-        deletePipeline.zrem(userKey, entry);
+        deletePipeline.zrem(userKey, entries[i]);
+
+        // Clean up role indices
+        if (results && results[i] && !results[i]![0] && results[i]![1]) {
+          const record = this.parseRecord(results[i]![1] as string);
+          if (record.roles) {
+            for (const role of record.roles) {
+              deletePipeline.zrem(rolePrefix + role, entries[i]);
+            }
+          }
+        }
       }
       await deletePipeline.exec();
     } while (entries.length >= this.batchSize);
@@ -389,6 +552,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
   ): Promise<string[]> {
     const affected: string[] = [];
     const userKey = this.key("idx:user", userId);
+    const rolePrefix = this.key("idx:role", userId) + ":";
 
     // WHY: Batch pipeline approach (like deleteAllForUser) but with soft-revocation.
     // Reads session data, checks if not already revoked, updates status in-place.
@@ -428,6 +592,15 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         );
         // WHY: Remove from active session index since status is no longer active.
         writePipeline.zrem(userKey, `${record.id}:${record.tokenHash}`);
+        // Clean up role indices
+        if (record.roles) {
+          for (const role of record.roles) {
+            writePipeline.zrem(
+              rolePrefix + role,
+              `${record.id}:${record.tokenHash}`,
+            );
+          }
+        }
         affected.push(record.id);
       }
       await writePipeline.exec();

@@ -582,4 +582,460 @@ describe("SessionService", () => {
       );
     });
   });
+
+  describe("role-based session limits", () => {
+    const roleConfig: SessionLibraryConfig = {
+      ...config,
+      limits: {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: {
+          SUPER_ADMIN: 1,
+          ADMIN: 2,
+        },
+      },
+    };
+
+    it("should enforce role-based limit when user has a matching role", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      const result1 = await roleService.createSession({
+        userId: "admin-1",
+        roles: ["SUPER_ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result1.success).toBe(true);
+
+      const result2 = await roleService.createSession({
+        userId: "admin-1",
+        roles: ["SUPER_ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result2.success).toBe(false);
+      if (!result2.success) {
+        expect(result2.error.message).toContain("exceeded maximum session limit");
+      }
+    });
+
+    it("should use most restrictive role limit when user has multiple roles", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      const result1 = await roleService.createSession({
+        userId: "admin-2",
+        roles: ["ADMIN", "SUPER_ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result1.success).toBe(true);
+
+      const result2 = await roleService.createSession({
+        userId: "admin-2",
+        roles: ["ADMIN", "SUPER_ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result2.success).toBe(false);
+    });
+
+    it("should fall back to maxSessionsPerUser when no role matches", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      for (let i = 0; i < 5; i++) {
+        const result = await roleService.createSession({
+          userId: "user-1",
+          roles: ["GUEST"],
+          metadata: { ipAddress: "127.0.0.1" },
+        });
+        expect(result.success).toBe(true);
+      }
+
+      const result = await roleService.createSession({
+        userId: "user-1",
+        roles: ["GUEST"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("should fall back to maxSessionsPerUser when roles array is empty", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      for (let i = 0; i < 5; i++) {
+        const result = await roleService.createSession({
+          userId: "user-2",
+          roles: [],
+          metadata: { ipAddress: "127.0.0.1" },
+        });
+        expect(result.success).toBe(true);
+      }
+
+      const result = await roleService.createSession({
+        userId: "user-2",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("should fall back to maxSessionsPerUser when maxSessionsPerRole is not configured", async () => {
+      const noRoleConfig: SessionLibraryConfig = {
+        ...config,
+        limits: { maxSessionsPerUser: 3 },
+      };
+      const roleService = new SessionService(store, noRoleConfig);
+
+      for (let i = 0; i < 3; i++) {
+        const result = await roleService.createSession({
+          userId: "user-3",
+          roles: ["SUPER_ADMIN"],
+          metadata: { ipAddress: "127.0.0.1" },
+        });
+        expect(result.success).toBe(true);
+      }
+
+      const result = await roleService.createSession({
+        userId: "user-3",
+        roles: ["SUPER_ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("should apply ADMIN limit of 2 correctly", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      const r1 = await roleService.createSession({
+        userId: "admin-3",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(r1.success).toBe(true);
+
+      const r2 = await roleService.createSession({
+        userId: "admin-3",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(r2.success).toBe(true);
+
+      const r3 = await roleService.createSession({
+        userId: "admin-3",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(r3.success).toBe(false);
+      if (!r3.success) {
+        expect(r3.error.message).toContain("exceeded maximum session limit");
+      }
+    });
+
+    it("should enforce role-based limit during rotation", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      // Create 2 ADMIN sessions (limit is 2)
+      const s1 = await roleService.createSession({
+        userId: "rot-admin-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s1.success).toBe(true);
+
+      const s2 = await roleService.createSession({
+        userId: "rot-admin-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s2.success).toBe(true);
+
+      // Rotate first session — should succeed (net count stays 2)
+      if (s1.success) {
+        const rotateResult = await roleService.rotateSession({
+          token: s1.data.token,
+        });
+        expect(rotateResult.success).toBe(true);
+      }
+
+      // Now revoke one session to free a slot, then try creating a third
+      if (s2.success) {
+        await roleService.revokeSession({ token: s2.data.token });
+      }
+
+      const s3 = await roleService.createSession({
+        userId: "rot-admin-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s3.success).toBe(true);
+    });
+
+    it("should allow ordinary sessions without counting against role-specific limits", async () => {
+      const dualConfig: SessionLibraryConfig = {
+        ...config,
+        limits: {
+          maxSessionsPerUser: 5,
+          maxSessionsPerRole: {
+            ADMIN: 2,
+          },
+        },
+      };
+      const roleService = new SessionService(store, dualConfig);
+
+      // Create 2 ADMIN sessions (hits ADMIN role limit of 2)
+      const a1 = await roleService.createSession({
+        userId: "dual-user-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a1.success).toBe(true);
+      const a2 = await roleService.createSession({
+        userId: "dual-user-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a2.success).toBe(true);
+
+      // Third ADMIN session should fail (role limit = 2)
+      const a3 = await roleService.createSession({
+        userId: "dual-user-1",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a3.success).toBe(false);
+
+      // But a non-admin session should still succeed (global cap = 5)
+      const o1 = await roleService.createSession({
+        userId: "dual-user-1",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(o1.success).toBe(true);
+
+      const o2 = await roleService.createSession({
+        userId: "dual-user-1",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(o2.success).toBe(true);
+    });
+
+    it("should enforce global cap even when role limit is higher", async () => {
+      const highRoleConfig: SessionLibraryConfig = {
+        ...config,
+        limits: {
+          maxSessionsPerUser: 3,
+          maxSessionsPerRole: {
+            ADMIN: 10,
+          },
+        },
+      };
+      const roleService = new SessionService(store, highRoleConfig);
+
+      // Create 3 ADMIN sessions — hits global cap of 3 even though ADMIN limit is 10
+      for (let i = 0; i < 3; i++) {
+        const r = await roleService.createSession({
+          userId: "high-role-user",
+          roles: ["ADMIN"],
+          metadata: { ipAddress: "127.0.0.1" },
+        });
+        expect(r.success).toBe(true);
+      }
+
+      // Fourth ADMIN session should fail (global cap = 3)
+      const r4 = await roleService.createSession({
+        userId: "high-role-user",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(r4.success).toBe(false);
+    });
+
+    it("should enforce both global and role limits independently", async () => {
+      const bothConfig: SessionLibraryConfig = {
+        ...config,
+        limits: {
+          maxSessionsPerUser: 4,
+          maxSessionsPerRole: {
+            ADMIN: 2,
+          },
+        },
+      };
+      const roleService = new SessionService(store, bothConfig);
+
+      // Create 2 ADMIN sessions (hits ADMIN limit)
+      const a1 = await roleService.createSession({
+        userId: "both-user",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a1.success).toBe(true);
+      const a2 = await roleService.createSession({
+        userId: "both-user",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a2.success).toBe(true);
+
+      // Third ADMIN should fail (role limit = 2)
+      const a3 = await roleService.createSession({
+        userId: "both-user",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(a3.success).toBe(false);
+
+      // Add non-admin sessions up to global cap
+      const o1 = await roleService.createSession({
+        userId: "both-user",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(o1.success).toBe(true);
+      const o2 = await roleService.createSession({
+        userId: "both-user",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(o2.success).toBe(true);
+
+      // Global cap is 4 (2 admin + 2 ordinary = 4), so this should fail
+      const o3 = await roleService.createSession({
+        userId: "both-user",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(o3.success).toBe(false);
+    });
+
+    it("should evaluate new role limits when roles are provided during rotation", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      // Create 1 session as USER (no role limit, global limit = 5)
+      const s1 = await roleService.createSession({
+        userId: "elevate-user",
+        roles: ["USER"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s1.success).toBe(true);
+
+      // Elevate to SUPER_ADMIN (limit = 1) — should succeed (no existing SUPER_ADMIN sessions)
+      if (s1.success) {
+        const rotResult = await roleService.rotateSession({
+          token: s1.data.token,
+          context: { ipAddress: "127.0.0.1" },
+          roles: ["SUPER_ADMIN"],
+        });
+        expect(rotResult.success).toBe(true);
+      }
+    });
+
+    it("should block rotation that would exceed new role's limit", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      // Create 2 sessions as USER
+      const s1 = await roleService.createSession({
+        userId: "elevate-block-user",
+        roles: ["USER"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      const s2 = await roleService.createSession({
+        userId: "elevate-block-user",
+        roles: ["USER"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s1.success).toBe(true);
+      expect(s2.success).toBe(true);
+
+      // Elevate first to SUPER_ADMIN (limit = 1) — succeeds
+      if (s1.success) {
+        const rot1 = await roleService.rotateSession({
+          token: s1.data.token,
+          context: { ipAddress: "127.0.0.1" },
+          roles: ["SUPER_ADMIN"],
+        });
+        expect(rot1.success).toBe(true);
+      }
+
+      // Elevate second to SUPER_ADMIN — blocked (limit = 1, already have 1)
+      if (s2.success) {
+        const rot2 = await roleService.rotateSession({
+          token: s2.data.token,
+          context: { ipAddress: "127.0.0.1" },
+          roles: ["SUPER_ADMIN"],
+        });
+        expect(rot2.success).toBe(false);
+      }
+    });
+
+    it("should elevate ordinary sessions to a strict role without pollution", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      // Create 3 ordinary sessions (roles: []) — no role limits apply
+      const s1 = await roleService.createSession({
+        userId: "elevate-ordinary",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      const s2 = await roleService.createSession({
+        userId: "elevate-ordinary",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      const s3 = await roleService.createSession({
+        userId: "elevate-ordinary",
+        roles: [],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s1.success).toBe(true);
+      expect(s2.success).toBe(true);
+      expect(s3.success).toBe(true);
+
+      // Elevate s1 to SUPER_ADMIN (limit = 1) — succeeds (no existing SUPER_ADMIN)
+      const rot1 = await roleService.rotateSession({
+        token: s1.data!.token,
+        context: { ipAddress: "127.0.0.1" },
+        roles: ["SUPER_ADMIN"],
+      });
+      expect(rot1.success).toBe(true);
+
+      // Elevate s2 to SUPER_ADMIN — blocked (limit = 1, already have 1)
+      const rot2 = await roleService.rotateSession({
+        token: s2.data!.token,
+        context: { ipAddress: "127.0.0.1" },
+        roles: ["SUPER_ADMIN"],
+      });
+      expect(rot2.success).toBe(false);
+
+      // s3 (ordinary) is unaffected — still valid
+      const s3Check = await roleService.validateSession({
+        token: s3.data!.token,
+        context: { ipAddress: "127.0.0.1" },
+      });
+      expect(s3Check.success).toBe(true);
+    });
+
+    it("should fall back to old roles when roles param is not provided", async () => {
+      const roleService = new SessionService(store, roleConfig);
+
+      // Create 2 ADMIN sessions (ADMIN limit = 2)
+      const s1 = await roleService.createSession({
+        userId: "no-roles-rot",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      const s2 = await roleService.createSession({
+        userId: "no-roles-rot",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+      expect(s1.success).toBe(true);
+      expect(s2.success).toBe(true);
+
+      // Rotate without providing roles — should use old roles (ADMIN)
+      // Admin limit is 2, rotation is 1-to-1 (count stays 2), so it should succeed
+      if (s1.success) {
+        const rot = await roleService.rotateSession({
+          token: s1.data.token,
+          context: { ipAddress: "127.0.0.1" },
+        });
+        expect(rot.success).toBe(true);
+      }
+    });
+  });
 });

@@ -17,6 +17,7 @@ import {
   SecurityEvaluationResult,
   SessionSnapshot,
   SessionListParams,
+  SessionLimits,
   DeviceOS,
   DeviceBrowser,
   DeviceType,
@@ -99,9 +100,8 @@ export class SessionService implements ISessionService {
       record: SessionRecord;
     }>
   > {
+    const limits = this.resolveLimits();
     try {
-      const maxSessions = this.config.limits.maxSessionsPerUser;
-
       const { token, tokenHash } = this.generateSecureToken();
 
       const now = new Date();
@@ -167,7 +167,7 @@ export class SessionService implements ISessionService {
         });
       }
 
-      await this.store.create(record, maxSessions);
+      await this.store.create(record, limits);
 
       // Emit session creation event
       this.emitEvent("session.created", {
@@ -185,7 +185,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          `User exceeded maximum session limit`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -316,6 +316,8 @@ export class SessionService implements ISessionService {
       }
     }
 
+    const limits = this.resolveLimits();
+
     try {
       const { token: newToken, tokenHash: newTokenHash } =
         this.generateSecureToken();
@@ -330,6 +332,7 @@ export class SessionService implements ISessionService {
         createdAt: now,
         lastUsedAt: now,
         parentSessionId: record.id,
+        ...(params.roles ? { roles: params.roles } : {}),
       };
 
       const oldUpdates: Partial<SessionRecord> = {
@@ -344,7 +347,8 @@ export class SessionService implements ISessionService {
         record.id,
         newRecord,
         oldUpdates,
-        this.config.limits.maxSessionsPerUser,
+        limits,
+        record.roles,
       );
 
       // Emit rotation success event
@@ -364,7 +368,7 @@ export class SessionService implements ISessionService {
     } catch (error: unknown) {
       if (error instanceof Error && error.message === "SESSION_LIMIT_REACHED") {
         return this.fail(
-          `User exceeded maximum session limit (${this.config.limits.maxSessionsPerUser})`,
+          `User exceeded maximum session limit`,
           403,
           SessionReasonCode.SECURITY_BREACH,
         );
@@ -705,6 +709,21 @@ export class SessionService implements ISessionService {
       actualUserAgent: params.context?.userAgent,
       timestamp: new Date(),
     });
+  }
+
+  /**
+   * Resolves the effective session limits for a set of roles.
+   * WHY: Returns a full SessionLimits object so the store adapter can enforce
+   * BOTH the global user cap and per-role caps in a single atomic operation.
+   * The global cap is ALWAYS the configured maxSessionsPerUser.
+   * Role-specific limits are independent counters — the store checks both
+   * caps and rejects if EITHER is exceeded.
+   */
+  private resolveLimits(): SessionLimits {
+    return {
+      maxSessionsPerUser: this.config.limits.maxSessionsPerUser,
+      maxSessionsPerRole: this.config.limits.maxSessionsPerRole,
+    };
   }
 
   /**

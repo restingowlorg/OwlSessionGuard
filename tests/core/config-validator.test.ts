@@ -184,4 +184,144 @@ describe("ConfigValidator", () => {
       expect(() => ConfigValidator.validate(config)).not.toThrow();
     });
   });
+
+  describe("limits validation", () => {
+    it("should throw FatalSecurityError if maxSessionsPerUser is zero", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 0 };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerUser/);
+    });
+
+    it("should throw FatalSecurityError if maxSessionsPerUser is negative", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: -1 };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerUser/);
+    });
+
+    it("should throw FatalSecurityError if maxSessionsPerUser is not an integer", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 2.5 };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerUser/);
+    });
+
+    it("should throw FatalSecurityError if role limit is zero", () => {
+      const config = getBaseConfig();
+      config.limits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { ADMIN: 0 },
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should throw FatalSecurityError if role limit is negative", () => {
+      const config = getBaseConfig();
+      config.limits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { ADMIN: -1 },
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should throw FatalSecurityError if role limit is not an integer", () => {
+      const config = getBaseConfig();
+      config.limits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { ADMIN: 1.5 },
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should not throw if role limits are valid positive integers", () => {
+      const config = getBaseConfig();
+      config.limits = {
+        maxSessionsPerUser: 5,
+        maxSessionsPerRole: { SUPER_ADMIN: 1, ADMIN: 2 },
+      };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should not throw if maxSessionsPerRole is not provided", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5 };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject null maxSessionsPerRole (fail closed)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: null as unknown as Record<string, number> };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject array maxSessionsPerRole (fail closed)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: [] as unknown as Record<string, number> };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject empty string role keys", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: { "": 1 } };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject whitespace-only role keys", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: { " ": 2 } };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject string maxSessionsPerRole (runtime garbage)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: "hello" as unknown as Record<string, number> };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject number maxSessionsPerRole (runtime garbage)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: 42 as unknown as Record<string, number> };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject boolean maxSessionsPerRole (runtime garbage)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: true as unknown as Record<string, number> };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+
+    it("should reject non-numeric role limit values (runtime garbage)", () => {
+      const config = getBaseConfig();
+      config.limits = { maxSessionsPerUser: 5, maxSessionsPerRole: { ADMIN: "two" as unknown as number } };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+  });
 });

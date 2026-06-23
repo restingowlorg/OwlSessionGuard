@@ -3,6 +3,7 @@ import {
   SessionListParams,
   SessionListResult,
   SessionReasonCode,
+  SessionLimits,
 } from "../types";
 
 /**
@@ -12,22 +13,28 @@ export interface SessionStoreAdapter {
   /**
    * Persist a new session record.
    * @param record The session to create
-   * @param maxSessions Optional limit to enforce atomically during creation
+   * @param limits Optional limits to enforce atomically during creation.
+   *   The adapter checks BOTH the global user cap and per-role caps
+   *   in a single atomic operation.
    */
-  create(record: SessionRecord, maxSessions?: number): Promise<void>;
+  create(record: SessionRecord, limits?: SessionLimits): Promise<void>;
 
   /**
    * Atomic session rotation (1-to-1 replacement).
    * @param oldId The ID of the session being replaced
    * @param newRecord The new session record to create
    * @param oldUpdates Updates to apply to the old session (e.g. status = ROTATED)
-   * @param maxSessions Optional limit to enforce
+   * @param limits Optional limits to enforce
+   * @param oldRoles Roles of the session being replaced — used for per-role
+   *   comparator selection. Roles in BOTH old and new use ">" (1-to-1 replacement).
+   *   Roles ONLY in new use ">=" (net increase).
    */
   rotate(
     oldId: string,
     newRecord: SessionRecord,
     oldUpdates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
+    oldRoles?: string[],
   ): Promise<void>;
 
   /**
@@ -44,12 +51,12 @@ export interface SessionStoreAdapter {
    * Update specific fields of an existing session.
    * @param id The session ID
    * @param updates The fields to update
-   * @param maxSessions Optional limit to enforce if the session becomes active
+   * @param limits Optional limits to enforce if the session becomes active
    */
   update(
     id: string,
     updates: Partial<SessionRecord>,
-    maxSessions?: number,
+    limits?: SessionLimits,
   ): Promise<void>;
 
   /**

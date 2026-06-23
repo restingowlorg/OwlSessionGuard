@@ -16,6 +16,7 @@ export class ConfigValidator {
   public static validate(config: SessionLibraryConfig): void {
     this.validateEnv(config);
     this.validateExpiration(config);
+    this.validateLimits(config);
     this.validateStore(config);
     this.validateConcurrency(config);
     this.validateDeviceConfig(config);
@@ -45,6 +46,46 @@ export class ConfigValidator {
           `Received: idleTimeout=${idleTimeoutSeconds}s, absoluteTimeout=${absoluteTimeoutSeconds}s.\n` +
           "[REMEDIATION]: Set 'idleTimeoutSeconds' to a value less than or equal to 'absoluteTimeoutSeconds'.",
       );
+    }
+  }
+
+  private static validateLimits(config: SessionLibraryConfig): void {
+    const { maxSessionsPerUser, maxSessionsPerRole } = config.limits;
+
+    if (maxSessionsPerUser <= 0 || !Number.isInteger(maxSessionsPerUser)) {
+      throw new FatalSecurityError(
+        "CONFIGURATION ERROR: 'limits.maxSessionsPerUser' must be a positive integer.\n" +
+          `[REMEDIATION]: Set 'config.limits.maxSessionsPerUser' to an integer >= 1 (received: ${maxSessionsPerUser}).`,
+      );
+    }
+
+    if (maxSessionsPerRole !== undefined) {
+      if (
+        maxSessionsPerRole === null ||
+        typeof maxSessionsPerRole !== "object" ||
+        Array.isArray(maxSessionsPerRole)
+      ) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'limits.maxSessionsPerRole' must be a plain object (Record<string, number>).\n" +
+            `[REMEDIATION]: Set 'config.limits.maxSessionsPerRole' to an object like { "ADMIN": 2 } (received: ${maxSessionsPerRole === null ? "null" : typeof maxSessionsPerRole}).`,
+        );
+      }
+
+      for (const [role, limit] of Object.entries(maxSessionsPerRole)) {
+        if (!role || role.trim() === "") {
+          throw new FatalSecurityError(
+            "CONFIGURATION ERROR: 'limits.maxSessionsPerRole' contains an empty or whitespace-only role key.\n" +
+              "[REMEDIATION]: Remove empty role keys or set them to valid non-empty strings.",
+          );
+        }
+
+        if (limit <= 0 || !Number.isInteger(limit)) {
+          throw new FatalSecurityError(
+            `CONFIGURATION ERROR: 'limits.maxSessionsPerRole["${role}"]' must be a positive integer.\n` +
+              `[REMEDIATION]: Set 'config.limits.maxSessionsPerRole["${role}"]' to an integer >= 1 (received: ${limit}).`,
+          );
+        }
+      }
     }
   }
 

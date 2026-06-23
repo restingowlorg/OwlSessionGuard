@@ -200,6 +200,14 @@ export interface RotateSessionParams {
     deviceFingerprint?: string; // Same rationale as ValidateSessionParams
   };
   reason?: SessionReasonCode;
+  /**
+   * Optional new role set for the rotated session.
+   * WHY: Rotation is used for privilege changes (e.g. USER → SUPER_ADMIN).
+   * When provided, the new session inherits these roles instead of the old roles.
+   * The store enforces limits against the NEW roles — so a privilege elevation
+   * correctly evaluates the SUPER_ADMIN limit, not the USER limit.
+   */
+  roles?: string[];
 }
 
 export interface RevokeSessionParams {
@@ -351,6 +359,16 @@ export interface SessionLibraryConfig {
     emitEvents: boolean;
     metrics: boolean;
   };
+}
+
+/**
+ * Session limit configuration passed to store adapters atomically.
+ * WHY: Role limits must be independent counters — the store checks BOTH
+ * the global user cap and the per-role cap in a single atomic operation.
+ */
+export interface SessionLimits {
+  maxSessionsPerUser: number;
+  maxSessionsPerRole?: Record<string, number>;
 }
 
 /**
