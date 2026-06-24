@@ -48,8 +48,6 @@ describe("Express Middleware", () => {
       rolling: true,
     },
     rotation: {
-      rotateOnLogin: true,
-      rotateOnPrivilegeChange: true,
       gracePeriodSeconds: 30,
     },
     security: {

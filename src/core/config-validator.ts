@@ -19,6 +19,7 @@ export class ConfigValidator {
     this.validateLimits(config);
     this.validateStore(config);
     this.validateConcurrency(config);
+    this.validateRotation(config);
     this.validateDeviceConfig(config);
 
     if (config.env === "production") {
@@ -138,6 +139,57 @@ export class ConfigValidator {
         "CONFIGURATION ERROR: 'concurrency.pollIntervalMs' must be a positive number.\n" +
           `[REMEDIATION]: Set 'config.concurrency.pollIntervalMs' to a value greater than 0 (received: ${concurrency.pollIntervalMs}).`,
       );
+    }
+  }
+
+  // WHY: 30-second safe maximum. OWASP recommends immediate invalidation on rotation,
+  // but industry implementations (Okta: 0-60s default 30s, Auth0: reuse interval)
+  // use a short grace window to handle legitimate concurrency (network retries,
+  // in-flight requests). 30s is the conservative upper bound — beyond this, the
+  // replay attack surface outweighs the usability benefit.
+  private static readonly SAFE_GRACE_PERIOD_SECONDS = 30;
+
+  private static validateRotation(config: SessionLibraryConfig): void {
+    const { rotation } = config;
+    if (!rotation) return;
+
+    if (typeof rotation !== "object" || Array.isArray(rotation)) {
+      throw new FatalSecurityError(
+        "CONFIGURATION ERROR: 'rotation' must be a plain object.\n" +
+          `[REMEDIATION]: Set 'config.rotation' to an object like { "gracePeriodSeconds": 5 } (received: ${typeof rotation}).`,
+      );
+    }
+
+    const { gracePeriodSeconds } = rotation;
+
+    if (gracePeriodSeconds !== undefined) {
+      if (typeof gracePeriodSeconds !== "number") {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'rotation.gracePeriodSeconds' must be a number.\n" +
+            `[REMEDIATION]: Set 'config.rotation.gracePeriodSeconds' to a number in seconds (received: ${typeof gracePeriodSeconds}).`,
+        );
+      }
+
+      if (!Number.isFinite(gracePeriodSeconds)) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'rotation.gracePeriodSeconds' must be a finite number.\n" +
+            `[REMEDIATION]: Set 'config.rotation.gracePeriodSeconds' to a finite number (received: ${gracePeriodSeconds}).`,
+        );
+      }
+
+      if (gracePeriodSeconds < 0) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'rotation.gracePeriodSeconds' cannot be negative.\n" +
+            `[REMEDIATION]: Set 'config.rotation.gracePeriodSeconds' to a value >= 0 (received: ${gracePeriodSeconds}).`,
+        );
+      }
+
+      if (gracePeriodSeconds > this.SAFE_GRACE_PERIOD_SECONDS) {
+        throw new FatalSecurityError(
+          `CONFIGURATION ERROR: 'rotation.gracePeriodSeconds' exceeds safe maximum of ${this.SAFE_GRACE_PERIOD_SECONDS}s.\n` +
+            `[REMEDIATION]: Set 'config.rotation.gracePeriodSeconds' to a value <= ${this.SAFE_GRACE_PERIOD_SECONDS} (received: ${gracePeriodSeconds}).`,
+        );
+      }
     }
   }
 

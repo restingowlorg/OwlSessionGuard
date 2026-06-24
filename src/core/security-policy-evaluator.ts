@@ -15,9 +15,16 @@ import {
  * immediate mutation blocks, and automatic reuse detection (ARD).
  */
 export class SecurityPolicyEvaluator {
-  private readonly hardCapMs = 50; // 50ms hard-capped concurrency window
+  // WHY: Grace window derived from config.rotation.gracePeriodSeconds (safe max: 30s).
+  // OWASP recommends immediate invalidation, but industry implementations (Okta, Auth0)
+  // use short grace windows for legitimate concurrency. Defaults to 50ms for backward
+  // compatibility with the original hard-coded micro-concurrency window.
+  private readonly graceWindowMs: number;
 
-  constructor(private readonly config: SessionLibraryConfig) {}
+  constructor(private readonly config: SessionLibraryConfig) {
+    const graceSeconds = config.rotation?.gracePeriodSeconds;
+    this.graceWindowMs = graceSeconds !== undefined ? graceSeconds * 1000 : 50;
+  }
 
   /**
    * WHY: Truncated SHA-256 preserves debuggability (compare hashes) while preventing
@@ -108,7 +115,7 @@ export class SecurityPolicyEvaluator {
       if (record.revokedAt) {
         const elapsedMs = now.getTime() - new Date(record.revokedAt).getTime();
 
-        if (elapsedMs >= 0 && elapsedMs <= this.hardCapMs) {
+        if (elapsedMs >= 0 && elapsedMs <= this.graceWindowMs) {
           return {
             isValid: true,
             isWithinGracePeriod: true,
@@ -119,7 +126,7 @@ export class SecurityPolicyEvaluator {
         }
       }
 
-      // Step C: If outside the 50ms concurrency window, flag as a replay breach (stolen token)
+      // Step C: If outside the grace concurrency window, flag as a replay breach (stolen token)
       return {
         isValid: false,
         isWithinGracePeriod: false,

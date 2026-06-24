@@ -19,9 +19,7 @@ describe("SessionService", () => {
       rolling: true,
     },
     rotation: {
-      rotateOnLogin: true,
-      rotateOnPrivilegeChange: true,
-      gracePeriodSeconds: 300,
+      gracePeriodSeconds: 0,
     },
     security: {
       enforceTlsInProduction: false,

@@ -64,9 +64,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       rolling: true,
     },
     rotation: {
-      rotateOnLogin: true,
-      rotateOnPrivilegeChange: true,
-      gracePeriodSeconds: 300,
+      gracePeriodSeconds: 30,
     },
     security: {
       enforceTlsInProduction: false,
@@ -199,14 +197,17 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(result.isWithinGracePeriod).toBe(true);
     });
 
-    it("should reject GET requests on rotated sessions outside the 50ms window", () => {
+    it("should reject GET requests on rotated sessions outside the grace window", () => {
+      const noGraceConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 0 } };
+      const evalr = new SecurityPolicyEvaluator(noGraceConfig);
+
       const frozenNow = new Date(1000);
       const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
-        revokedAt: new Date(800), // 200ms before frozenNow (outside 50ms cap)
+        revokedAt: new Date(999), // 1ms before (but grace is 0ms)
       });
 
-      const result = evaluator.evaluate(record, {
+      const result = evalr.evaluate(record, {
         ipAddress: "192.168.1.1",
         userAgent: "Mozilla",
         method: "GET",
@@ -215,6 +216,172 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(result.isValid).toBe(false);
       expect(result.actionRequired).toBe("revoke_tree"); // Triggers ARD
       expect(result.reason).toBe(SessionReasonCode.SECURITY_BREACH);
+    });
+  });
+
+  describe("Grace Period Configuration", () => {
+    it("should use 50ms default when gracePeriodSeconds is undefined", () => {
+      const defaultConfig = { ...baseConfig, rotation: {} };
+      const evalr = new SecurityPolicyEvaluator(defaultConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(960), // 40ms before (within 50ms default)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(true);
+      expect(result.isWithinGracePeriod).toBe(true);
+    });
+
+    it("should reject all rotated GETs when gracePeriodSeconds is 0", () => {
+      const zeroConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 0 } };
+      const evalr = new SecurityPolicyEvaluator(zeroConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(999), // 1ms before (but grace is 0ms)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke_tree");
+    });
+
+    it("should allow rotated GETs within custom grace window (1s)", () => {
+      const customConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 1 } };
+      const evalr = new SecurityPolicyEvaluator(customConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(500), // 500ms before (within 1000ms window)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(true);
+      expect(result.isWithinGracePeriod).toBe(true);
+    });
+
+    it("should reject rotated GETs outside custom grace window (1s)", () => {
+      const customConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 1 } };
+      const evalr = new SecurityPolicyEvaluator(customConfig);
+
+      const frozenNow = new Date(2000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(500), // 1500ms before (outside 1000ms window)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke_tree");
+    });
+
+    it("should still block unsafe methods regardless of grace window", () => {
+      const largeConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 30 } };
+      const evalr = new SecurityPolicyEvaluator(largeConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(999), // 1ms before (within 30s window)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "POST",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke_tree");
+    });
+
+    it("should be stateless across concurrent evaluations", () => {
+      const evalr = new SecurityPolicyEvaluator(baseConfig);
+
+      const record1: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(980),
+      });
+      const record2: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(960),
+      });
+
+      const ctx = { ipAddress: "192.168.1.1", userAgent: "Mozilla", method: "GET" };
+      const now = new Date(1000);
+
+      const result1 = evalr.evaluate(record1, ctx, now);
+      const result2 = evalr.evaluate(record2, ctx, now);
+
+      expect(result1.isValid).toBe(true);
+      expect(result2.isValid).toBe(true);
+      expect(result1.isWithinGracePeriod).toBe(true);
+      expect(result2.isWithinGracePeriod).toBe(true);
+    });
+
+    it("should support fractional gracePeriodSeconds (0.5s = 500ms)", () => {
+      const fractionConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 0.5 } };
+      const evalr = new SecurityPolicyEvaluator(fractionConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(600), // 400ms before (within 500ms window)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(true);
+      expect(result.isWithinGracePeriod).toBe(true);
+    });
+
+    it("should reject GET outside fractional grace window (0.5s = 500ms)", () => {
+      const fractionConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 0.5 } };
+      const evalr = new SecurityPolicyEvaluator(fractionConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(400), // 600ms before (outside 500ms window)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke_tree");
     });
   });
 
@@ -543,9 +710,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       });
       expect(validateActive.success).toBe(true);
 
-      // Artificially age the revokedAt timestamp of A beyond 50ms limit (e.g. 1 second ago)
+      // Artificially age the revokedAt timestamp beyond grace window (30s config + buffer)
       await store.update(oldRecord.id, {
-        revokedAt: new Date(Date.now() - 1000),
+        revokedAt: new Date(Date.now() - 31000),
       });
 
       // Attacker attempts to reuse old token A
@@ -603,9 +770,9 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(rotateD.success).toBe(true);
       if (!rotateD.success) return;
 
-      // Artificially age the revokedAt timestamp of A beyond 50ms limit (e.g. 1 second ago)
+      // Artificially age the revokedAt timestamp beyond grace window (30s config + buffer)
       await store.update(createA.data.record.id, {
-        revokedAt: new Date(Date.now() - 1000),
+        revokedAt: new Date(Date.now() - 31000),
       });
 
       // Attacker attempts to reuse old token A
