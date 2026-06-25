@@ -417,5 +417,37 @@ describe("ConfigValidator", () => {
       expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
       expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
     });
+
+    it("should reject rotation as null (explicit null)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = null;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as false (boolean)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = false;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as 0 (number)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = 0;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as empty string", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = "";
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
   });
 });

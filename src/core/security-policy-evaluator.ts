@@ -112,7 +112,10 @@ export class SecurityPolicyEvaluator {
       }
 
       // Step B: Concurrency Window check
-      if (record.revokedAt) {
+      // WHY: Skip grace check entirely when graceWindowMs <= 0. A consumer setting
+      // gracePeriodSeconds: 0 expects zero grace — no old tokens valid, period.
+      // Without this guard, elapsedMs === 0 (same millisecond) would pass.
+      if (record.revokedAt && this.graceWindowMs > 0) {
         const elapsedMs = now.getTime() - new Date(record.revokedAt).getTime();
 
         if (elapsedMs >= 0 && elapsedMs <= this.graceWindowMs) {

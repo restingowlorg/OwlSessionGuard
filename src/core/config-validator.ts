@@ -151,12 +151,16 @@ export class ConfigValidator {
 
   private static validateRotation(config: SessionLibraryConfig): void {
     const { rotation } = config;
-    if (!rotation) return;
+    if (rotation === undefined) return;
 
-    if (typeof rotation !== "object" || Array.isArray(rotation)) {
+    if (
+      rotation === null ||
+      typeof rotation !== "object" ||
+      Array.isArray(rotation)
+    ) {
       throw new FatalSecurityError(
         "CONFIGURATION ERROR: 'rotation' must be a plain object.\n" +
-          `[REMEDIATION]: Set 'config.rotation' to an object like { "gracePeriodSeconds": 5 } (received: ${typeof rotation}).`,
+          `[REMEDIATION]: Set 'config.rotation' to an object like { "gracePeriodSeconds": 5 } (received: ${rotation === null ? "null" : typeof rotation}).`,
       );
     }
 

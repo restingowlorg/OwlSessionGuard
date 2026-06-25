@@ -180,11 +180,11 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(result.reason).toBe(SessionReasonCode.SECURITY_BREACH);
     });
 
-    it("should allow read-only GET requests on rotated sessions within 50ms window", () => {
+    it("should allow read-only GET requests on rotated sessions within configured grace window", () => {
       const frozenNow = new Date(1000);
       const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
-        revokedAt: new Date(980), // 20ms before frozenNow (within 50ms)
+        revokedAt: new Date(980), // 20ms before frozenNow (within 30s configured grace)
       });
 
       const result = evaluator.evaluate(record, {
@@ -248,6 +248,26 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       const record: SessionRecord = createBaseRecord({
         status: SessionStatus.ROTATED,
         revokedAt: new Date(999), // 1ms before (but grace is 0ms)
+      });
+
+      const result = evalr.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        userAgent: "Mozilla",
+        method: "GET",
+      }, frozenNow);
+
+      expect(result.isValid).toBe(false);
+      expect(result.actionRequired).toBe("revoke_tree");
+    });
+
+    it("should reject rotated GET when revokedAt equals now with zero grace", () => {
+      const zeroConfig = { ...baseConfig, rotation: { gracePeriodSeconds: 0 } };
+      const evalr = new SecurityPolicyEvaluator(zeroConfig);
+
+      const frozenNow = new Date(1000);
+      const record: SessionRecord = createBaseRecord({
+        status: SessionStatus.ROTATED,
+        revokedAt: new Date(1000), // SAME millisecond as now
       });
 
       const result = evalr.evaluate(record, {
@@ -662,7 +682,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       expect(rotateResult.success).toBe(true);
       if (!rotateResult.success) return;
 
-      // The old token is now ROTATED but within the 50ms grace period.
+      // The old token is now ROTATED but within the configured grace period.
       // Launch 5 concurrent read requests with the OLD token
       const promises = Array.from({ length: 5 }).map(() =>
         service.validateSession({
