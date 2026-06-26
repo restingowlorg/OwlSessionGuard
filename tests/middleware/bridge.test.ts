@@ -57,8 +57,6 @@ const defaultConfig: SessionLibraryConfig = {
     rolling: true,
   },
   rotation: {
-    rotateOnLogin: true,
-    rotateOnPrivilegeChange: true,
     gracePeriodSeconds: 30,
   },
   security: {

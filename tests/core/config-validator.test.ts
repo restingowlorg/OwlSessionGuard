@@ -14,7 +14,7 @@ describe("ConfigValidator", () => {
       },
     },
     expiration: { idleTimeoutSeconds: 3600, absoluteTimeoutSeconds: 86400, rolling: true },
-    rotation: { rotateOnLogin: true, rotateOnPrivilegeChange: true, gracePeriodSeconds: 300 },
+    rotation: { gracePeriodSeconds: 10 },
     security: {
       enforceTlsInProduction: true,
       ipBinding: "hard",
@@ -322,6 +322,132 @@ describe("ConfigValidator", () => {
 
       expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
       expect(() => ConfigValidator.validate(config)).toThrow(/maxSessionsPerRole/);
+    });
+  });
+
+  describe("Rotation Configuration", () => {
+    it("should accept valid gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: 5 };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should accept zero gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: 0 };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should accept undefined gracePeriodSeconds (backward compat)", () => {
+      const config = getBaseConfig();
+      config.rotation = {};
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject non-numeric gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: "30" as unknown as number };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/gracePeriodSeconds/);
+    });
+
+    it("should reject NaN gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: NaN };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/gracePeriodSeconds/);
+    });
+
+    it("should reject Infinity gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: Infinity };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/gracePeriodSeconds/);
+    });
+
+    it("should reject negative gracePeriodSeconds", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: -1 };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/gracePeriodSeconds/);
+    });
+
+    it("should reject gracePeriodSeconds exceeding safe maximum (30s)", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: 31 };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/gracePeriodSeconds/);
+    });
+
+    it("should accept fractional gracePeriodSeconds (e.g., 0.5s)", () => {
+      const config = getBaseConfig();
+      config.rotation = { gracePeriodSeconds: 0.5 };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject rotation as a string (runtime garbage)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = "invalid";
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as an array (runtime garbage)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = [30];
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as a number (runtime garbage)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = 30;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as null (explicit null)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = null;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as false (boolean)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = false;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as 0 (number)", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = 0;
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+
+    it("should reject rotation as empty string", () => {
+      const config = getBaseConfig();
+      (config as any).rotation = "";
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
     });
   });
 });

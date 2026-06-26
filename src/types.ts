@@ -295,9 +295,7 @@ export interface SessionLibraryConfig {
   };
 
   rotation: {
-    rotateOnLogin: boolean;
-    rotateOnPrivilegeChange: boolean;
-    gracePeriodSeconds: number;
+    gracePeriodSeconds?: number;
   };
 
   security: {
