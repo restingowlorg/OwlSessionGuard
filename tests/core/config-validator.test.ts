@@ -19,7 +19,7 @@ describe("ConfigValidator", () => {
       enforceTlsInProduction: true,
       ipBinding: "hard",
       fingerprinting: "hard",
-      csrf: { enabled: true },
+      csrf: { enabled: false },
     },
     limits: { maxSessionsPerUser: 3 },
     store: { provider: "memory" },
@@ -448,6 +448,54 @@ describe("ConfigValidator", () => {
 
       expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
       expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+  });
+
+  describe("CSRF Secret Validation", () => {
+    it("should require secret when CSRF is enabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should reject empty string secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "" };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should reject whitespace-only secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "   " };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should accept valid secret when CSRF is enabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "a-very-long-random-secret-key-that-is-long-enough" };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject secret shorter than 32 characters", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "short-secret" };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/32 characters/);
+    });
+
+    it("should not require secret when CSRF is disabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: false };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
     });
   });
 });

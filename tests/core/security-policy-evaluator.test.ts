@@ -1,6 +1,7 @@
 import { SecurityPolicyEvaluator } from "../../src/core/security-policy-evaluator";
 import { SessionService } from "../../src/core/session.service";
 import { MemoryStoreAdapter } from "../../src/storage/adapters/memory.adapter";
+import { hmacSign } from "../../src/infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -500,33 +501,35 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
   describe("CSRF Validation Enforcement", () => {
     it("should allow state-changing request if CSRF token matches", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
       const csrfConfig = {
         ...baseConfig,
         // WHY: fingerprinting: "off" isolates CSRF validation. Tests that call evaluate()
         // without a deviceFingerprint context would be blocked by Step 6B before reaching CSRF.
-        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         method: "POST",
-        csrfToken: "super-secret-csrf-token", // Matches!
+        csrfToken: hmacSign("sess-1", secret), // Matches!
       });
 
       expect(result.isValid).toBe(true);
     });
 
     it("should reject state-changing request if CSRF token is missing", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -539,18 +542,19 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should reject state-changing request if CSRF token mismatches", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         method: "PUT",
-        csrfToken: "hacker-token", // Mismatch
+        csrfToken: hmacSign("wrong-session", secret), // Mismatch
       });
 
       expect(result.isValid).toBe(false);
@@ -558,17 +562,203 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
     });
 
     it("should ignore CSRF for non-state-changing GET requests even if token is missing", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
       const csrfConfig = {
         ...baseConfig,
-        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true } },
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: "super-secret-csrf-token" });
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         method: "GET", // Safe method
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    // WHY: Mixed-case methods (e.g. "PoSt") bypassed the old manual dual-case check.
+    // Normalization must handle all case variants.
+    it("should require CSRF for mixed-case Post", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "Post",
+        csrfToken: hmacSign("sess-1", secret),
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should require CSRF for mixed-case pUt", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "pUt",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    it("should require CSRF for mixed-case Patch", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "Patch",
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: HMAC-signed tokens must be bound to the correct session.
+    // A token signed for session A must not validate against session B.
+    it("should reject token signed for a different session", () => {
+      const secret = "test-secret-key";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const recordA: SessionRecord = createBaseRecord({
+        id: "session-A",
+        csrfToken: hmacSign("session-A", secret),
+      });
+
+      // Attacker uses token from session A against session B
+      const result = csrfEvaluator.evaluate(recordA, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: hmacSign("session-B", secret),
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: Random tokens without HMAC signature must fail validation.
+    // This ensures only cryptographically signed tokens are accepted.
+    it("should reject non-HMAC random token", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: "not-a-valid-hmac-token-that-is-less-than-64-chars", // Not 64 hex chars
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: Tokens with wrong length (not 64 hex chars) must be rejected.
+    it("should reject token with wrong length", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: "a".repeat(64), // 64 chars but not valid hex (contains non-hex chars)
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: After session rotation, the old CSRF token must be rejected.
+    // This prevents token reuse attacks where an attacker captures a token
+    // and uses it after the legitimate user has rotated their session.
+    it("should reject old CSRF token after session rotation", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const oldSessionId = "old-session-id";
+      const newSessionId = "new-session-id";
+
+      const oldCsrfToken = hmacSign(oldSessionId, secret);
+      const newCsrfToken = hmacSign(newSessionId, secret);
+
+      // New session record after rotation
+      const newRecord: SessionRecord = createBaseRecord({
+        id: newSessionId,
+        csrfToken: newCsrfToken,
+      });
+
+      // Attacker uses the OLD token against the NEW session
+      const result = csrfEvaluator.evaluate(newRecord, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: oldCsrfToken, // Stale token from old session
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: New CSRF token must work against the new session after rotation.
+    it("should accept new CSRF token after session rotation", () => {
+      const secret = "test-secret-key-for-evaluator-tests-32chars";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const newSessionId = "new-session-id";
+      const newCsrfToken = hmacSign(newSessionId, secret);
+
+      const newRecord: SessionRecord = createBaseRecord({
+        id: newSessionId,
+        csrfToken: newCsrfToken,
+      });
+
+      const result = csrfEvaluator.evaluate(newRecord, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: newCsrfToken,
       });
 
       expect(result.isValid).toBe(true);

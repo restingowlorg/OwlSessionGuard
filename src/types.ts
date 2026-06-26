@@ -306,6 +306,7 @@ export interface SessionLibraryConfig {
       enabled: boolean;
       cookieName?: string;
       headerName?: string;
+      secret?: string; // WHY: HMAC secret for signing CSRF tokens to session IDs.
     };
   };
 

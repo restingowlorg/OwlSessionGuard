@@ -1,7 +1,11 @@
 import { EventEmitter } from "events";
 import { v4 as uuidv4 } from "uuid";
 import { ISessionService } from "../interfaces";
-import { fastHash, generateBase64UrlToken } from "../infra/crypto/crypto";
+import {
+  fastHash,
+  generateBase64UrlToken,
+  hmacSign,
+} from "../infra/crypto/crypto";
 import {
   SessionOpResult,
   CreateSessionParams,
@@ -137,8 +141,9 @@ export class SessionService implements ISessionService {
         };
       }
 
+      const sessionId = uuidv4();
       const record: SessionRecord = {
-        id: uuidv4(),
+        id: sessionId,
         userId: params.userId,
         tokenHash,
         status: SessionStatus.ACTIVE,
@@ -154,7 +159,7 @@ export class SessionService implements ISessionService {
           deviceContext,
         },
         csrfToken: this.config.security.csrf.enabled
-          ? generateBase64UrlToken(32)
+          ? this.signCsrfToken(sessionId)
           : undefined,
       };
 
@@ -324,14 +329,18 @@ export class SessionService implements ISessionService {
 
       const now = new Date();
 
+      const newSessionId = uuidv4();
       const newRecord: SessionRecord = {
         ...record,
-        id: uuidv4(),
+        id: newSessionId,
         tokenHash: newTokenHash,
         status: SessionStatus.ACTIVE,
         createdAt: now,
         lastUsedAt: now,
         parentSessionId: record.id,
+        csrfToken: this.config.security.csrf.enabled
+          ? this.signCsrfToken(newSessionId)
+          : record.csrfToken,
         ...(params.roles ? { roles: params.roles } : {}),
       };
 
@@ -655,6 +664,16 @@ export class SessionService implements ISessionService {
     const token = generateBase64UrlToken(32);
     const tokenHash = fastHash(token);
     return { token, tokenHash };
+  }
+
+  // WHY: HMAC binds the CSRF token to a specific session ID.
+  // Validates that the token belongs to this session, not another.
+  private signCsrfToken(sessionId: string): string {
+    const secret = this.config.security.csrf.secret;
+    if (!secret) {
+      throw new Error("CSRF secret required for signed tokens");
+    }
+    return hmacSign(sessionId, secret);
   }
 
   private emitEvent(event: string, payload: Record<string, unknown>): void {

@@ -55,6 +55,11 @@ export class SecurityPolicyEvaluator {
     context: SecurityEvaluationContext,
     now: Date = new Date(),
   ): SecurityEvaluationResult {
+    // WHY: Normalize method once at the top to eliminate redundant toUpperCase() calls
+    // in the rotation gate (Step 3) and CSRF gate (Step 4). All downstream checks
+    // compare against the already-normalized value.
+    const normalizedMethod = (context.method || "GET").toUpperCase();
+
     // 1. Lifecycle Status check
     if (record.status === SessionStatus.REVOKED) {
       return {
@@ -95,11 +100,10 @@ export class SecurityPolicyEvaluator {
     // 3. Session Rotation & Micro-Concurrency Validation
     if (record.status === SessionStatus.ROTATED) {
       // Step A: Idempotency Gate (Strict mutation block)
-      const methodUpper = (context.method || "GET").toUpperCase();
       const isIdempotent =
-        methodUpper === "GET" ||
-        methodUpper === "HEAD" ||
-        methodUpper === "OPTIONS";
+        normalizedMethod === "GET" ||
+        normalizedMethod === "HEAD" ||
+        normalizedMethod === "OPTIONS";
 
       if (!isIdempotent) {
         return {
@@ -141,28 +145,30 @@ export class SecurityPolicyEvaluator {
 
     // 4. CSRF Validation check
     if (this.config.security.csrf.enabled) {
-      const m = context.method || "GET";
-      // O(1) Zero-allocation boolean evaluation
       const isStateChanging =
-        m === "POST" ||
-        m === "PUT" ||
-        m === "DELETE" ||
-        m === "PATCH" ||
-        m === "post" ||
-        m === "put" ||
-        m === "delete" ||
-        m === "patch";
+        normalizedMethod === "POST" ||
+        normalizedMethod === "PUT" ||
+        normalizedMethod === "DELETE" ||
+        normalizedMethod === "PATCH";
 
       if (isStateChanging) {
+        // WHY: HMAC-SHA256 produces exactly 64 lowercase hex chars.
+        // Reject tokens that don't match this format to prevent unsigned tokens.
+        const HMAC_HEX = /^[a-f0-9]{64}$/;
+        const clientTokenValid =
+          context.csrfToken && HMAC_HEX.test(context.csrfToken);
+        const recordTokenValid =
+          record.csrfToken && HMAC_HEX.test(record.csrfToken);
+
         if (
-          !context.csrfToken ||
-          !record.csrfToken ||
-          !constantTimeCompare(context.csrfToken, record.csrfToken)
+          !clientTokenValid ||
+          !recordTokenValid ||
+          !constantTimeCompare(context.csrfToken!, record.csrfToken!)
         ) {
           return {
             isValid: false,
             isWithinGracePeriod: false,
-            actionRequired: "none", // Do not revoke, just block the request (standard CSRF behavior, though some strict configs might revoke)
+            actionRequired: "none",
             reason: SessionReasonCode.CSRF_VIOLATION,
             message: "CSRF token mismatch or missing",
           };

@@ -20,6 +20,7 @@ export class ConfigValidator {
     this.validateStore(config);
     this.validateConcurrency(config);
     this.validateRotation(config);
+    this.validateCsrfConfig(config);
     this.validateDeviceConfig(config);
 
     if (config.env === "production") {
@@ -194,6 +195,33 @@ export class ConfigValidator {
             `[REMEDIATION]: Set 'config.rotation.gracePeriodSeconds' to a value <= ${this.SAFE_GRACE_PERIOD_SECONDS} (received: ${gracePeriodSeconds}).`,
         );
       }
+    }
+  }
+
+  // WHY: CSRF tokens are HMAC-signed to session IDs. A secret is mandatory —
+  // without it, tokens are unsigned and an attacker can forge them trivially.
+  private static validateCsrfConfig(config: SessionLibraryConfig): void {
+    const { csrf } = config.security;
+    if (!csrf.enabled) return;
+
+    if (
+      !csrf.secret ||
+      typeof csrf.secret !== "string" ||
+      csrf.secret.trim() === ""
+    ) {
+      throw new FatalSecurityError(
+        "CONFIGURATION ERROR: 'security.csrf.secret' is required when CSRF is enabled.\n" +
+          "[REMEDIATION]: Set 'config.security.csrf.secret' to a strong, randomly generated string (e.g. 64+ hex chars).",
+      );
+    }
+
+    // WHY: Weak secrets are trivially brute-forced. 32 chars minimum ensures
+    // sufficient entropy for HMAC-SHA256 signing.
+    if (csrf.secret.length < 32) {
+      throw new FatalSecurityError(
+        "CONFIGURATION ERROR: 'security.csrf.secret' must be at least 32 characters.\n" +
+          `[REMEDIATION]: Set 'config.security.csrf.secret' to a longer random string (received length: ${csrf.secret.length}).`,
+      );
     }
   }
 
