@@ -302,12 +302,15 @@ export interface SessionLibraryConfig {
     enforceTlsInProduction: boolean;
     ipBinding: "off" | "soft" | "hard";
     fingerprinting: "off" | "soft" | "hard";
-    csrf: {
-      enabled: boolean;
-      cookieName?: string;
-      headerName?: string;
-      secret?: string; // WHY: HMAC secret for signing CSRF tokens to session IDs.
-    };
+    csrf:
+      | { enabled: false; cookieName?: string; headerName?: string }
+      | {
+          enabled: true;
+          secret: string;
+          previousSecret?: string;
+          cookieName?: string;
+          headerName?: string;
+        };
   };
 
   device?: {

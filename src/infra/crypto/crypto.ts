@@ -53,3 +53,8 @@ export function constantTimeCompare(
 export function hmacSign(data: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(data).digest("hex");
 }
+
+// WHY: Purpose prefix ensures domain separation — if hmacSign is reused for
+// another purpose, the same session ID + secret produces a different HMAC.
+// Internal constant, not consumer-configurable (changing it invalidates all tokens).
+export const CSRF_SIGNING_PREFIX = "ossec-session:csrf:v1:" as const;

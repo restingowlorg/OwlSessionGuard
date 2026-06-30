@@ -223,6 +223,34 @@ export class ConfigValidator {
           `[REMEDIATION]: Set 'config.security.csrf.secret' to a longer random string (received length: ${csrf.secret.length}).`,
       );
     }
+
+    // WHY: previousSecret enables gradual key rotation per OWASP Secrets Management Cheat Sheet.
+    // Must be a valid string, ≥32 chars, and different from current secret.
+    if (csrf.previousSecret !== undefined) {
+      if (
+        typeof csrf.previousSecret !== "string" ||
+        csrf.previousSecret.trim() === ""
+      ) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'security.csrf.previousSecret' must be a non-empty string.\n" +
+            "[REMEDIATION]: Set 'config.security.csrf.previousSecret' to the previous HMAC secret, or remove it entirely.",
+        );
+      }
+
+      if (csrf.previousSecret.length < 32) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'security.csrf.previousSecret' must be at least 32 characters.\n" +
+            `[REMEDIATION]: Set 'config.security.csrf.previousSecret' to a longer random string (received length: ${csrf.previousSecret.length}).`,
+        );
+      }
+
+      if (csrf.previousSecret === csrf.secret) {
+        throw new FatalSecurityError(
+          "CONFIGURATION ERROR: 'security.csrf.previousSecret' must differ from 'security.csrf.secret'.\n" +
+            "[REMEDIATION]: Set 'config.security.csrf.previousSecret' to the OLD secret before rotation, or remove it.",
+        );
+      }
+    }
   }
 
   private static validateDeviceConfig(config: SessionLibraryConfig): void {

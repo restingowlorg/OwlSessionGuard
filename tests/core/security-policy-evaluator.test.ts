@@ -1,7 +1,7 @@
 import { SecurityPolicyEvaluator } from "../../src/core/security-policy-evaluator";
 import { SessionService } from "../../src/core/session.service";
 import { MemoryStoreAdapter } from "../../src/storage/adapters/memory.adapter";
-import { hmacSign } from "../../src/infra/crypto/crypto";
+import { hmacSign, CSRF_SIGNING_PREFIX } from "../../src/infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -11,6 +11,11 @@ import {
   DeviceBrowser,
   DeviceType,
 } from "../../src/types";
+
+// WHY: Mirrors the domain-separated prefix used in SessionService.signCsrfToken().
+// Tests must use the same prefix the evaluator recomputes at validation time.
+const csrfSign = (sessionId: string, secret: string): string =>
+  hmacSign(`${CSRF_SIGNING_PREFIX}${sessionId}`, secret);
 
 /**
  * WHY: SessionRecord.metadata requires ResolvedDeviceContext (non-partial) because
@@ -510,12 +515,12 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         method: "POST",
-        csrfToken: hmacSign("sess-1", secret), // Matches!
+        csrfToken: csrfSign("sess-1", secret), // Matches!
       });
 
       expect(result.isValid).toBe(true);
@@ -529,7 +534,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -549,7 +554,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -569,7 +574,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -588,12 +593,12 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
         method: "Post",
-        csrfToken: hmacSign("sess-1", secret),
+        csrfToken: csrfSign("sess-1", secret),
       });
 
       expect(result.isValid).toBe(true);
@@ -606,7 +611,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -624,7 +629,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
         security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -647,14 +652,45 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
 
       const recordA: SessionRecord = createBaseRecord({
         id: "session-A",
-        csrfToken: hmacSign("session-A", secret),
+        csrfToken: csrfSign("session-A", secret),
       });
 
       // Attacker uses token from session A against session B
       const result = csrfEvaluator.evaluate(recordA, {
         ipAddress: "192.168.1.1",
         method: "POST",
-        csrfToken: hmacSign("session-B", secret),
+        csrfToken: csrfSign("session-B", secret),
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    // WHY: Proves evaluator recomputes expected HMAC from record.id — not just comparing
+    // client token == stored token. Both tokens are identical strings (same HMAC) but
+    // signed for session-B, not session-A. A naive string-equality check would pass;
+    // HMAC recomputation from record.id correctly rejects.
+    it("should reject when client and stored tokens match but are signed for wrong session", () => {
+      const secret = "test-secret-key";
+      const csrfConfig = {
+        ...baseConfig,
+        security: { ...baseConfig.security, fingerprinting: "off" as const, csrf: { enabled: true, secret } },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      const wrongToken = csrfSign("session-B", secret);
+
+      // Record is for session-A, but stored csrfToken was signed for session-B
+      const recordA: SessionRecord = createBaseRecord({
+        id: "session-A",
+        csrfToken: wrongToken,
+      });
+
+      // Client submits the SAME token (attacker compromised the stored value)
+      const result = csrfEvaluator.evaluate(recordA, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: wrongToken,
       });
 
       expect(result.isValid).toBe(false);
@@ -671,7 +707,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -692,7 +728,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       };
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
-      const record: SessionRecord = createBaseRecord({ csrfToken: hmacSign("sess-1", secret) });
+      const record: SessionRecord = createBaseRecord({ csrfToken: csrfSign("sess-1", secret) });
 
       const result = csrfEvaluator.evaluate(record, {
         ipAddress: "192.168.1.1",
@@ -718,8 +754,8 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       const oldSessionId = "old-session-id";
       const newSessionId = "new-session-id";
 
-      const oldCsrfToken = hmacSign(oldSessionId, secret);
-      const newCsrfToken = hmacSign(newSessionId, secret);
+      const oldCsrfToken = csrfSign(oldSessionId, secret);
+      const newCsrfToken = csrfSign(newSessionId, secret);
 
       // New session record after rotation
       const newRecord: SessionRecord = createBaseRecord({
@@ -748,7 +784,7 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
 
       const newSessionId = "new-session-id";
-      const newCsrfToken = hmacSign(newSessionId, secret);
+      const newCsrfToken = csrfSign(newSessionId, secret);
 
       const newRecord: SessionRecord = createBaseRecord({
         id: newSessionId,
@@ -762,6 +798,127 @@ describe("SecurityPolicyEvaluator & Concurrency Sync", () => {
       });
 
       expect(result.isValid).toBe(true);
+    });
+
+    // WHY: Tests for previousSecret grace window — OWASP gradual rotation pattern.
+    // When csrf.secret is rotated, tokens signed with the old secret remain valid
+    // until sessions rotate and receive tokens signed with the new secret.
+
+    it("should accept token signed with previousSecret during grace period", () => {
+      const currentSecret = "current-secret-key-for-csrf-32chars!!!";
+      const previousSecret = "previous-secret-key-for-csrf-32chars!!";
+      const sessionId = "sess-grace-1";
+
+      const csrfConfig = {
+        ...baseConfig,
+        security: {
+          ...baseConfig.security,
+          fingerprinting: "off" as const,
+          csrf: { enabled: true, secret: currentSecret, previousSecret },
+        },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      // Record has token signed with OLD secret (simulates pre-rotation session)
+      const oldToken = csrfSign(sessionId, previousSecret);
+      const record: SessionRecord = createBaseRecord({ id: sessionId, csrfToken: oldToken });
+
+      // Client sends token signed with OLD secret
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: oldToken,
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should accept token signed with currentSecret alongside previousSecret", () => {
+      const currentSecret = "current-secret-key-for-csrf-32chars!!!";
+      const previousSecret = "previous-secret-key-for-csrf-32chars!!";
+      const sessionId = "sess-grace-2";
+
+      const csrfConfig = {
+        ...baseConfig,
+        security: {
+          ...baseConfig.security,
+          fingerprinting: "off" as const,
+          csrf: { enabled: true, secret: currentSecret, previousSecret },
+        },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      // Record has token signed with NEW secret (post-rotation session)
+      const newToken = csrfSign(sessionId, currentSecret);
+      const record: SessionRecord = createBaseRecord({ id: sessionId, csrfToken: newToken });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: newToken,
+      });
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject token signed with wrong secret when previousSecret is configured", () => {
+      const currentSecret = "current-secret-key-for-csrf-32chars!!!";
+      const previousSecret = "previous-secret-key-for-csrf-32chars!!";
+      const wrongSecret = "wrong-secret-key-for-csrf-32chars!!!!!";
+      const sessionId = "sess-grace-3";
+
+      const csrfConfig = {
+        ...baseConfig,
+        security: {
+          ...baseConfig.security,
+          fingerprinting: "off" as const,
+          csrf: { enabled: true, secret: currentSecret, previousSecret },
+        },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      // Token signed with a THIRD secret (neither current nor previous)
+      const wrongToken = csrfSign(sessionId, wrongSecret);
+      const record: SessionRecord = createBaseRecord({ id: sessionId, csrfToken: wrongToken });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: wrongToken,
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
+    });
+
+    it("should reject old token once previousSecret is removed", () => {
+      const currentSecret = "current-secret-key-for-csrf-32chars!!!";
+      const previousSecret = "previous-secret-key-for-csrf-32chars!!";
+      const sessionId = "sess-grace-4";
+
+      // Config WITHOUT previousSecret (grace period ended)
+      const csrfConfig = {
+        ...baseConfig,
+        security: {
+          ...baseConfig.security,
+          fingerprinting: "off" as const,
+          csrf: { enabled: true, secret: currentSecret },
+        },
+      };
+      const csrfEvaluator = new SecurityPolicyEvaluator(csrfConfig);
+
+      // Token signed with old secret
+      const oldToken = csrfSign(sessionId, previousSecret);
+      const record: SessionRecord = createBaseRecord({ id: sessionId, csrfToken: oldToken });
+
+      const result = csrfEvaluator.evaluate(record, {
+        ipAddress: "192.168.1.1",
+        method: "POST",
+        csrfToken: oldToken,
+      });
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toBe(SessionReasonCode.CSRF_VIOLATION);
     });
   });
 

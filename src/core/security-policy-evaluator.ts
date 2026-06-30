@@ -1,5 +1,10 @@
 import { SessionStateMachine } from "./state-machine";
-import { constantTimeCompare, fastHash } from "../infra/crypto/crypto";
+import {
+  constantTimeCompare,
+  fastHash,
+  hmacSign,
+  CSRF_SIGNING_PREFIX,
+} from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -160,11 +165,64 @@ export class SecurityPolicyEvaluator {
         const recordTokenValid =
           record.csrfToken && HMAC_HEX.test(record.csrfToken);
 
-        if (
-          !clientTokenValid ||
-          !recordTokenValid ||
-          !constantTimeCompare(context.csrfToken!, record.csrfToken!)
-        ) {
+        // Recompute expected HMAC from record.id and secret — never trust stored value
+        const secret = this.config.security.csrf.secret;
+        if (!secret) {
+          return {
+            isValid: false,
+            isWithinGracePeriod: false,
+            actionRequired: "none",
+            reason: SessionReasonCode.CSRF_VIOLATION,
+            message: "CSRF secret not configured",
+          };
+        }
+
+        // WHY: Try current secret first, fall back to previous secret for gradual rotation.
+        // This prevents thundering-herd logout when the HMAC secret is rotated.
+        // OWASP Secrets Management Cheat Sheet: "Introducing new keys for Write operations,
+        // leaving old keys for Read operations."
+        const expectedToken = hmacSign(
+          `${CSRF_SIGNING_PREFIX}${record.id}`,
+          secret,
+        );
+        const expectedTokenValid = HMAC_HEX.test(expectedToken);
+
+        const currentSecretValid =
+          clientTokenValid &&
+          recordTokenValid &&
+          expectedTokenValid &&
+          constantTimeCompare(context.csrfToken!, expectedToken) &&
+          constantTimeCompare(record.csrfToken!, expectedToken);
+
+        if (currentSecretValid) {
+          // Current secret validation passed — continue to next check
+        } else if (this.config.security.csrf.previousSecret) {
+          // WHY: Fall back to previous secret during grace period.
+          // Tokens signed with the old secret remain valid until sessions rotate.
+          const previousExpectedToken = hmacSign(
+            `${CSRF_SIGNING_PREFIX}${record.id}`,
+            this.config.security.csrf.previousSecret,
+          );
+          const previousExpectedValid = HMAC_HEX.test(previousExpectedToken);
+
+          const previousSecretValid =
+            clientTokenValid &&
+            recordTokenValid &&
+            previousExpectedValid &&
+            constantTimeCompare(context.csrfToken!, previousExpectedToken) &&
+            constantTimeCompare(record.csrfToken!, previousExpectedToken);
+
+          if (!previousSecretValid) {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              reason: SessionReasonCode.CSRF_VIOLATION,
+              message: "CSRF token mismatch or missing",
+            };
+          }
+          // Previous secret validation passed — continue to next check
+        } else {
           return {
             isValid: false,
             isWithinGracePeriod: false,

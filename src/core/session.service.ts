@@ -5,6 +5,7 @@ import {
   fastHash,
   generateBase64UrlToken,
   hmacSign,
+  CSRF_SIGNING_PREFIX,
 } from "../infra/crypto/crypto";
 import {
   SessionOpResult,
@@ -668,12 +669,14 @@ export class SessionService implements ISessionService {
 
   // WHY: HMAC binds the CSRF token to a specific session ID.
   // Validates that the token belongs to this session, not another.
+  // Prefix ensures domain separation — same session ID used for a different
+  // purpose (e.g. API key signing) produces a different HMAC.
   private signCsrfToken(sessionId: string): string {
-    const secret = this.config.security.csrf.secret;
-    if (!secret) {
-      throw new Error("CSRF secret required for signed tokens");
+    const { csrf } = this.config.security;
+    if (!csrf.enabled) {
+      throw new Error("CSRF must be enabled for signed tokens");
     }
-    return hmacSign(sessionId, secret);
+    return hmacSign(`${CSRF_SIGNING_PREFIX}${sessionId}`, csrf.secret);
   }
 
   private emitEvent(event: string, payload: Record<string, unknown>): void {
