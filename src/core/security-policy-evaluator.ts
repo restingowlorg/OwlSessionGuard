@@ -1,5 +1,10 @@
 import { SessionStateMachine } from "./state-machine";
-import { constantTimeCompare, fastHash } from "../infra/crypto/crypto";
+import {
+  constantTimeCompare,
+  fastHash,
+  hmacSign,
+  CSRF_SIGNING_PREFIX,
+} from "../infra/crypto/crypto";
 import {
   SessionRecord,
   SessionStatus,
@@ -55,6 +60,11 @@ export class SecurityPolicyEvaluator {
     context: SecurityEvaluationContext,
     now: Date = new Date(),
   ): SecurityEvaluationResult {
+    // WHY: Normalize method once at the top to eliminate redundant toUpperCase() calls
+    // in the rotation gate (Step 3) and CSRF gate (Step 4). All downstream checks
+    // compare against the already-normalized value.
+    const normalizedMethod = (context.method || "GET").toUpperCase();
+
     // 1. Lifecycle Status check
     if (record.status === SessionStatus.REVOKED) {
       return {
@@ -95,11 +105,10 @@ export class SecurityPolicyEvaluator {
     // 3. Session Rotation & Micro-Concurrency Validation
     if (record.status === SessionStatus.ROTATED) {
       // Step A: Idempotency Gate (Strict mutation block)
-      const methodUpper = (context.method || "GET").toUpperCase();
       const isIdempotent =
-        methodUpper === "GET" ||
-        methodUpper === "HEAD" ||
-        methodUpper === "OPTIONS";
+        normalizedMethod === "GET" ||
+        normalizedMethod === "HEAD" ||
+        normalizedMethod === "OPTIONS";
 
       if (!isIdempotent) {
         return {
@@ -141,28 +150,83 @@ export class SecurityPolicyEvaluator {
 
     // 4. CSRF Validation check
     if (this.config.security.csrf.enabled) {
-      const m = context.method || "GET";
-      // O(1) Zero-allocation boolean evaluation
       const isStateChanging =
-        m === "POST" ||
-        m === "PUT" ||
-        m === "DELETE" ||
-        m === "PATCH" ||
-        m === "post" ||
-        m === "put" ||
-        m === "delete" ||
-        m === "patch";
+        normalizedMethod === "POST" ||
+        normalizedMethod === "PUT" ||
+        normalizedMethod === "DELETE" ||
+        normalizedMethod === "PATCH";
 
       if (isStateChanging) {
-        if (
-          !context.csrfToken ||
-          !record.csrfToken ||
-          !constantTimeCompare(context.csrfToken, record.csrfToken)
-        ) {
+        // WHY: HMAC-SHA256 produces exactly 64 lowercase hex chars.
+        // Reject tokens that don't match this format to prevent unsigned tokens.
+        const HMAC_HEX = /^[a-f0-9]{64}$/;
+        const clientTokenValid =
+          context.csrfToken && HMAC_HEX.test(context.csrfToken);
+        const recordTokenValid =
+          record.csrfToken && HMAC_HEX.test(record.csrfToken);
+
+        // Recompute expected HMAC from record.id and secret — never trust stored value
+        const secret = this.config.security.csrf.secret;
+        if (!secret) {
           return {
             isValid: false,
             isWithinGracePeriod: false,
-            actionRequired: "none", // Do not revoke, just block the request (standard CSRF behavior, though some strict configs might revoke)
+            actionRequired: "none",
+            reason: SessionReasonCode.CSRF_VIOLATION,
+            message: "CSRF secret not configured",
+          };
+        }
+
+        // WHY: Try current secret first, fall back to previous secret for gradual rotation.
+        // This prevents thundering-herd logout when the HMAC secret is rotated.
+        // OWASP Secrets Management Cheat Sheet: "Introducing new keys for Write operations,
+        // leaving old keys for Read operations."
+        const expectedToken = hmacSign(
+          `${CSRF_SIGNING_PREFIX}${record.id}`,
+          secret,
+        );
+        const expectedTokenValid = HMAC_HEX.test(expectedToken);
+
+        const currentSecretValid =
+          clientTokenValid &&
+          recordTokenValid &&
+          expectedTokenValid &&
+          constantTimeCompare(context.csrfToken!, expectedToken) &&
+          constantTimeCompare(record.csrfToken!, expectedToken);
+
+        if (currentSecretValid) {
+          // Current secret validation passed — continue to next check
+        } else if (this.config.security.csrf.previousSecret) {
+          // WHY: Fall back to previous secret during grace period.
+          // Tokens signed with the old secret remain valid until sessions rotate.
+          const previousExpectedToken = hmacSign(
+            `${CSRF_SIGNING_PREFIX}${record.id}`,
+            this.config.security.csrf.previousSecret,
+          );
+          const previousExpectedValid = HMAC_HEX.test(previousExpectedToken);
+
+          const previousSecretValid =
+            clientTokenValid &&
+            recordTokenValid &&
+            previousExpectedValid &&
+            constantTimeCompare(context.csrfToken!, previousExpectedToken) &&
+            constantTimeCompare(record.csrfToken!, previousExpectedToken);
+
+          if (!previousSecretValid) {
+            return {
+              isValid: false,
+              isWithinGracePeriod: false,
+              actionRequired: "none",
+              reason: SessionReasonCode.CSRF_VIOLATION,
+              message: "CSRF token mismatch or missing",
+            };
+          }
+          // Previous secret validation passed — continue to next check
+        } else {
+          return {
+            isValid: false,
+            isWithinGracePeriod: false,
+            actionRequired: "none",
             reason: SessionReasonCode.CSRF_VIOLATION,
             message: "CSRF token mismatch or missing",
           };

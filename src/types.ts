@@ -302,11 +302,15 @@ export interface SessionLibraryConfig {
     enforceTlsInProduction: boolean;
     ipBinding: "off" | "soft" | "hard";
     fingerprinting: "off" | "soft" | "hard";
-    csrf: {
-      enabled: boolean;
-      cookieName?: string;
-      headerName?: string;
-    };
+    csrf:
+      | { enabled: false; cookieName?: string; headerName?: string }
+      | {
+          enabled: true;
+          secret: string;
+          previousSecret?: string;
+          cookieName?: string;
+          headerName?: string;
+        };
   };
 
   device?: {

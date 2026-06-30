@@ -19,7 +19,7 @@ describe("ConfigValidator", () => {
       enforceTlsInProduction: true,
       ipBinding: "hard",
       fingerprinting: "hard",
-      csrf: { enabled: true },
+      csrf: { enabled: false },
     },
     limits: { maxSessionsPerUser: 3 },
     store: { provider: "memory" },
@@ -448,6 +448,125 @@ describe("ConfigValidator", () => {
 
       expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
       expect(() => ConfigValidator.validate(config)).toThrow(/rotation/);
+    });
+  });
+
+  describe("CSRF Secret Validation", () => {
+    it("should require secret when CSRF is enabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should reject empty string secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "" };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should reject whitespace-only secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "   " };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/csrf\.secret/);
+    });
+
+    it("should accept valid secret when CSRF is enabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "a-very-long-random-secret-key-that-is-long-enough" };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject secret shorter than 32 characters", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: true, secret: "short-secret" };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/32 characters/);
+    });
+
+    it("should not require secret when CSRF is disabled", () => {
+      const config = getBaseConfig();
+      config.security.csrf = { enabled: false };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should accept valid previousSecret alongside secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: "previous-secret-key-for-csrf-32chars!!",
+      };
+
+      expect(() => ConfigValidator.validate(config)).not.toThrow();
+    });
+
+    it("should reject previousSecret that is not a string", () => {
+      const config = getBaseConfig();
+      (config.security.csrf as any) = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: 123,
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/previousSecret/);
+    });
+
+    it("should reject empty string previousSecret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: "",
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/previousSecret/);
+    });
+
+    it("should reject whitespace-only previousSecret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: "   ",
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/previousSecret/);
+    });
+
+    it("should reject previousSecret shorter than 32 characters", () => {
+      const config = getBaseConfig();
+      config.security.csrf = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: "short",
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/32 characters/);
+    });
+
+    it("should reject previousSecret equal to secret", () => {
+      const config = getBaseConfig();
+      config.security.csrf = {
+        enabled: true,
+        secret: "current-secret-key-for-csrf-32chars!!!",
+        previousSecret: "current-secret-key-for-csrf-32chars!!!",
+      };
+
+      expect(() => ConfigValidator.validate(config)).toThrow(FatalSecurityError);
+      expect(() => ConfigValidator.validate(config)).toThrow(/differ/);
     });
   });
 });

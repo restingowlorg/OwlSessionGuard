@@ -1,7 +1,12 @@
 import { EventEmitter } from "events";
 import { v4 as uuidv4 } from "uuid";
 import { ISessionService } from "../interfaces";
-import { fastHash, generateBase64UrlToken } from "../infra/crypto/crypto";
+import {
+  fastHash,
+  generateBase64UrlToken,
+  hmacSign,
+  CSRF_SIGNING_PREFIX,
+} from "../infra/crypto/crypto";
 import {
   SessionOpResult,
   CreateSessionParams,
@@ -137,8 +142,9 @@ export class SessionService implements ISessionService {
         };
       }
 
+      const sessionId = uuidv4();
       const record: SessionRecord = {
-        id: uuidv4(),
+        id: sessionId,
         userId: params.userId,
         tokenHash,
         status: SessionStatus.ACTIVE,
@@ -154,7 +160,7 @@ export class SessionService implements ISessionService {
           deviceContext,
         },
         csrfToken: this.config.security.csrf.enabled
-          ? generateBase64UrlToken(32)
+          ? this.signCsrfToken(sessionId)
           : undefined,
       };
 
@@ -324,14 +330,18 @@ export class SessionService implements ISessionService {
 
       const now = new Date();
 
+      const newSessionId = uuidv4();
       const newRecord: SessionRecord = {
         ...record,
-        id: uuidv4(),
+        id: newSessionId,
         tokenHash: newTokenHash,
         status: SessionStatus.ACTIVE,
         createdAt: now,
         lastUsedAt: now,
         parentSessionId: record.id,
+        csrfToken: this.config.security.csrf.enabled
+          ? this.signCsrfToken(newSessionId)
+          : record.csrfToken,
         ...(params.roles ? { roles: params.roles } : {}),
       };
 
@@ -655,6 +665,18 @@ export class SessionService implements ISessionService {
     const token = generateBase64UrlToken(32);
     const tokenHash = fastHash(token);
     return { token, tokenHash };
+  }
+
+  // WHY: HMAC binds the CSRF token to a specific session ID.
+  // Validates that the token belongs to this session, not another.
+  // Prefix ensures domain separation — same session ID used for a different
+  // purpose (e.g. API key signing) produces a different HMAC.
+  private signCsrfToken(sessionId: string): string {
+    const { csrf } = this.config.security;
+    if (!csrf.enabled) {
+      throw new Error("CSRF must be enabled for signed tokens");
+    }
+    return hmacSign(`${CSRF_SIGNING_PREFIX}${sessionId}`, csrf.secret);
   }
 
   private emitEvent(event: string, payload: Record<string, unknown>): void {
