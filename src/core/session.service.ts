@@ -325,10 +325,43 @@ export class SessionService implements ISessionService {
     const limits = this.resolveLimits();
 
     try {
+      // WHY: Run security evaluation before rotation to enforce IP binding,
+      // fingerprinting, and CSRF policies. This prevents unauthorized rotation
+      // from compromised contexts. Only run if context is provided (backward compat).
+      const now = new Date();
+      if (params.context) {
+        const evaluationContext: SecurityEvaluationContext = {
+          ipAddress: params.context.ipAddress,
+          userAgent: params.context.userAgent,
+          deviceFingerprint: params.context.deviceFingerprint,
+          method: params.context.method || "GET",
+          csrfToken: undefined, // Rotation does not require CSRF validation
+        };
+
+        const evaluation = this.evaluator.evaluate(
+          record,
+          evaluationContext,
+          now,
+        );
+        if (!evaluation.isValid) {
+          const reason = evaluation.reason || SessionReasonCode.SECURITY_BREACH;
+          await this.handlePolicyViolation(
+            record,
+            evaluation,
+            evaluationContext,
+            reason,
+          );
+          return this.fail(
+            evaluation.message || "Security violation during rotation",
+            401,
+            reason,
+            true,
+          );
+        }
+      }
+
       const { token: newToken, tokenHash: newTokenHash } =
         this.generateSecureToken();
-
-      const now = new Date();
 
       const newSessionId = uuidv4();
       const newRecord: SessionRecord = {

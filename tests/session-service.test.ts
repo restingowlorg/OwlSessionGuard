@@ -746,6 +746,7 @@ describe("SessionService", () => {
       if (s1.success) {
         const rotateResult = await roleService.rotateSession({
           token: s1.data.token,
+          context: { ipAddress: "127.0.0.1" },
         });
         expect(rotateResult.success).toBe(true);
       }

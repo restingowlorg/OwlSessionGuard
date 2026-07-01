@@ -137,10 +137,23 @@ export class BridgeProcessor {
       csrfToken = context.getHeader(this.csrfConfig.headerName);
     }
 
+    let deviceFingerprint: string | undefined;
+    if (this.deviceConfig.enabled) {
+      try {
+        deviceFingerprint = context.getDeviceId?.();
+      } catch (error) {
+        // WHY: Log but continue without fingerprint. A corrupted cookie or
+        // misconfigured parser should not crash the request pipeline.
+        // The fingerprint check will be skipped for this request.
+        console.error("[OSSEC] getDeviceId() threw:", error);
+      }
+    }
+
     const clientInfo = {
       ...context.getClientInfo(),
       method: context.getMethod(),
       csrfToken,
+      deviceFingerprint,
     };
 
     let result: ValidateResult;
@@ -320,13 +333,24 @@ export class BridgeProcessor {
   // WHY: Writes a persistent device identifier cookie. This is the standard
   // entry point for consumers — keeps cookie name and options centralized
   // in the bridge so framework middlewares don't duplicate config logic.
-  public writeDeviceIdCookie(context: SessionWebContext, deviceId: string) {
+  public writeDeviceIdCookie(
+    context: SessionWebContext,
+    deviceId: string,
+    expectedFingerprint?: string,
+  ) {
     if (!this.deviceConfig.enabled) return;
 
     // WHY: Reject empty or oversized deviceId at the boundary to prevent
     // silent cookie collision or denial-of-service via cookie size limits.
     // Max 512 matches DeviceContextExtractor validation.
     if (!deviceId || deviceId.length > 512) return;
+
+    // WHY: If the session's stored fingerprint is provided, validate that the
+    // deviceId matches it. Writing a mismatched cookie silently breaks
+    // fingerprinting on subsequent requests.
+    if (expectedFingerprint !== undefined && deviceId !== expectedFingerprint) {
+      return;
+    }
 
     try {
       context.setCookie(

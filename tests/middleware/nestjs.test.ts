@@ -99,4 +99,47 @@ describe("NestJS Binding", () => {
       guard.canActivate(mockContext as ExecutionContext),
     ).rejects.toThrow("Insufficient roles");
   });
+
+  it("should forward deviceFingerprint from device cookie to service", async () => {
+    const deviceConfig: SessionLibraryConfig = {
+      ...config,
+      device: { enabled: true, cookie: { name: "device_id" } },
+    };
+
+    const mockReq: Partial<SessionRequest> = {
+      headers: {},
+      cookies: { sid: "token", device_id: "device_abc_123" },
+      signedCookies: {},
+      session: undefined,
+      method: "GET",
+    };
+
+    mockContext = {
+      getType: () => "http",
+      switchToHttp: () => ({
+        getRequest: () => mockReq as SessionRequest,
+        getResponse: () => ({}) as SessionResponse,
+      }),
+      getHandler: () => function handler() {},
+      getClass: () => class Controller {},
+    } as unknown as ExecutionContext;
+
+    const guard = new SessionGuard(mockService, deviceConfig, mockReflector);
+
+    mockService.validateSession.mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await guard.canActivate(mockContext as ExecutionContext);
+
+    expect(mockService.validateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          deviceFingerprint: "device_abc_123",
+        }),
+      }),
+    );
+  });
 });

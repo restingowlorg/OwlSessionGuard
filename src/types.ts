@@ -453,5 +453,6 @@ export type ValidateFunction = (
     userAgent?: string;
     method: string;
     csrfToken?: string;
+    deviceFingerprint?: string;
   },
 ) => Promise<ValidateResult>;
