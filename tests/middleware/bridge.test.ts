@@ -9,6 +9,8 @@ import {
   SessionRecord,
 } from "../../src/types";
 import { ISessionService } from "../../src/interfaces";
+import { SessionService } from "../../src/core/session.service";
+import { MemoryStoreAdapter } from "../../src/storage/adapters/memory.adapter";
 
 const createMockSession = (
   overrides: Partial<SessionRecord> = {},
@@ -1054,5 +1056,117 @@ describe("buildValidateFn", () => {
         method: "GET",
       },
     });
+  });
+});
+
+describe("Device Fingerprint Integration (real SessionService + MemoryStoreAdapter)", () => {
+  let mockContext: jest.Mocked<SessionWebContext>;
+
+  beforeEach(() => {
+    mockContext = createMockContext();
+  });
+  const hardFingerprintConfig: SessionLibraryConfig = {
+    env: "test",
+    transport: {
+      mode: "cookie",
+      cookie: {
+        name: "test_sid",
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+      },
+    },
+    expiration: {
+      idleTimeoutSeconds: 3600,
+      absoluteTimeoutSeconds: 86400,
+      rolling: true,
+    },
+    rotation: {
+      gracePeriodSeconds: 30,
+    },
+    security: {
+      enforceTlsInProduction: false,
+      ipBinding: "off",
+      fingerprinting: "hard",
+      csrf: { enabled: false },
+    },
+    device: { enabled: true, cookie: { name: "device_id" } },
+    limits: { maxSessionsPerUser: 5 },
+    store: { provider: "memory" },
+    observability: { debug: false, emitEvents: false, metrics: false },
+  };
+
+  it("should succeed when device cookie matches session fingerprint", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      if (name === "device_id") return "device_abc_123";
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue("device_abc_123");
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(true);
+  });
+
+  it("should reject when device cookie is missing in hard mode", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue(undefined);
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(false);
+  });
+
+  it("should reject when device cookie is wrong in hard mode", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      if (name === "device_id") return "wrong_device_value";
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue("wrong_device_value");
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(false);
   });
 });

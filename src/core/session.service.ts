@@ -334,7 +334,7 @@ export class SessionService implements ISessionService {
           ipAddress: params.context.ipAddress,
           userAgent: params.context.userAgent,
           deviceFingerprint: params.context.deviceFingerprint,
-          method: params.context.method || "GET",
+          method: "GET", // WHY: Skip CSRF gate — rotation is internal, not a user action
           csrfToken: undefined, // Rotation does not require CSRF validation
         };
 

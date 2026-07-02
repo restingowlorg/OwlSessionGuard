@@ -144,7 +144,9 @@ export class BridgeProcessor {
       } catch (error) {
         // WHY: Log but continue without fingerprint. A corrupted cookie or
         // misconfigured parser should not crash the request pipeline.
-        // The fingerprint check will be skipped for this request.
+        // NOTE: In hard fingerprinting mode, a missing deviceFingerprint
+        // is evaluated as "" and fails against a persistent stored fingerprint,
+        // so the session will be rejected — not silently bypassed.
         console.error("[OSSEC] getDeviceId() threw:", error);
       }
     }
