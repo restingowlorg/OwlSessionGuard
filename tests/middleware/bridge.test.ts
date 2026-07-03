@@ -9,6 +9,8 @@ import {
   SessionRecord,
 } from "../../src/types";
 import { ISessionService } from "../../src/interfaces";
+import { SessionService } from "../../src/core/session.service";
+import { MemoryStoreAdapter } from "../../src/storage/adapters/memory.adapter";
 
 const createMockSession = (
   overrides: Partial<SessionRecord> = {},
@@ -97,6 +99,7 @@ describe("BridgeProcessor", () => {
       ipAddress: "127.0.0.1",
       method: "GET",
       csrfToken: undefined,
+      deviceFingerprint: undefined,
     });
     expect(mockContext.setSession).toHaveBeenCalledWith(sessionRecord);
   });
@@ -452,6 +455,133 @@ describe("BridgeProcessor", () => {
 
     expect(result).toBe(false);
   });
+
+  it("should call getDeviceId and forward deviceFingerprint to validateFn", async () => {
+    const deviceConfig: SessionLibraryConfig = {
+      ...defaultConfig,
+      device: { enabled: true },
+    };
+    const deviceProcessor = new BridgeProcessor(deviceConfig);
+
+    mockContext.getCookie.mockReturnValue("token");
+    mockContext.getDeviceId.mockReturnValue("device_abc_123");
+
+    const validateFn = jest.fn().mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    const result = await deviceProcessor.handle(mockContext, validateFn);
+
+    expect(result).toBe(true);
+    expect(mockContext.getDeviceId).toHaveBeenCalled();
+    expect(validateFn).toHaveBeenCalledWith("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
+      deviceFingerprint: "device_abc_123",
+    });
+  });
+
+  it("should forward undefined deviceFingerprint when getDeviceId returns undefined", async () => {
+    mockContext.getCookie.mockReturnValue("token");
+    mockContext.getDeviceId.mockReturnValue(undefined);
+
+    const validateFn = jest.fn().mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await processor.handle(mockContext, validateFn);
+
+    expect(validateFn).toHaveBeenCalledWith("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
+      deviceFingerprint: undefined,
+    });
+  });
+
+  it("should forward undefined deviceFingerprint when getDeviceId is not implemented", async () => {
+    mockContext.getCookie.mockReturnValue("token");
+    delete (mockContext as { getDeviceId?: jest.Mock }).getDeviceId;
+
+    const validateFn = jest.fn().mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await processor.handle(mockContext, validateFn);
+
+    expect(validateFn).toHaveBeenCalledWith("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
+      deviceFingerprint: undefined,
+    });
+  });
+
+  it("should NOT call getDeviceId when device is disabled", async () => {
+    mockContext.getCookie.mockReturnValue("token");
+    mockContext.getDeviceId.mockReturnValue("should_not_be_called");
+
+    const validateFn = jest.fn().mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    // processor uses defaultConfig which has device disabled
+    await processor.handle(mockContext, validateFn);
+
+    expect(mockContext.getDeviceId).not.toHaveBeenCalled();
+    expect(validateFn).toHaveBeenCalledWith("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
+      deviceFingerprint: undefined,
+    });
+  });
+
+  it("should swallow getDeviceId error and continue without fingerprint", async () => {
+    const deviceConfig: SessionLibraryConfig = {
+      ...defaultConfig,
+      device: { enabled: true },
+    };
+    const deviceProcessor = new BridgeProcessor(deviceConfig);
+
+    mockContext.getCookie.mockReturnValue("token");
+    mockContext.getDeviceId.mockImplementation(() => {
+      throw new Error("Cookie parser broken");
+    });
+
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+    const validateFn = jest.fn().mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    const result = await deviceProcessor.handle(mockContext, validateFn);
+
+    expect(result).toBe(true);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[OSSEC] getDeviceId() threw:",
+      expect.any(Error),
+    );
+    expect(validateFn).toHaveBeenCalledWith("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      csrfToken: undefined,
+      deviceFingerprint: undefined,
+    });
+
+    consoleSpy.mockRestore();
+  });
 });
 
 describe("BridgeProcessor - Device Cookie Helpers", () => {
@@ -665,6 +795,58 @@ describe("BridgeProcessor - Device Cookie Helpers", () => {
     expect(mockContext.getDeviceId()).toBe("device_from_request");
     expect(processor.deviceCookieName).toBe("my_device");
   });
+
+  it("should write device cookie when expectedFingerprint matches", () => {
+    const config: SessionLibraryConfig = {
+      ...defaultConfig,
+      device: { enabled: true, cookie: { name: "my_device" } },
+    };
+    const processor = new BridgeProcessor(config);
+
+    processor.writeDeviceIdCookie(
+      mockContext,
+      "device_abc_123",
+      "device_abc_123",
+    );
+
+    expect(mockContext.setCookie).toHaveBeenCalledWith(
+      "my_device",
+      "device_abc_123",
+      expect.objectContaining({ httpOnly: true, secure: true }),
+    );
+  });
+
+  it("should block device cookie write when expectedFingerprint does not match", () => {
+    const config: SessionLibraryConfig = {
+      ...defaultConfig,
+      device: { enabled: true, cookie: { name: "my_device" } },
+    };
+    const processor = new BridgeProcessor(config);
+
+    processor.writeDeviceIdCookie(
+      mockContext,
+      "device_abc_123",
+      "different_fingerprint",
+    );
+
+    expect(mockContext.setCookie).not.toHaveBeenCalled();
+  });
+
+  it("should write device cookie when expectedFingerprint is undefined", () => {
+    const config: SessionLibraryConfig = {
+      ...defaultConfig,
+      device: { enabled: true, cookie: { name: "my_device" } },
+    };
+    const processor = new BridgeProcessor(config);
+
+    processor.writeDeviceIdCookie(mockContext, "device_abc_123", undefined);
+
+    expect(mockContext.setCookie).toHaveBeenCalledWith(
+      "my_device",
+      "device_abc_123",
+      expect.objectContaining({ httpOnly: true, secure: true }),
+    );
+  });
 });
 
 describe("buildValidateFn", () => {
@@ -781,5 +963,210 @@ describe("buildValidateFn", () => {
         clearCsrfToken: true,
       }),
     );
+  });
+
+  it("should forward deviceFingerprint to service.validateSession in default mode", async () => {
+    const mockService: ISessionService = {
+      createSession: jest.fn(),
+      validateSession: jest.fn().mockResolvedValue({
+        success: true,
+        data: createMockSession(),
+        httpCode: 200,
+      }),
+      rotateSession: jest.fn(),
+      revokeSession: jest.fn(),
+      revokeAllSessionsForUser: jest.fn(),
+    };
+
+    const fn = buildValidateFn(mockService);
+    await fn("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+      deviceFingerprint: "device_abc_123",
+    });
+
+    expect(mockService.validateSession).toHaveBeenCalledWith({
+      token: "token",
+      csrfToken: undefined,
+      context: {
+        ipAddress: "127.0.0.1",
+        userAgent: undefined,
+        method: "GET",
+        deviceFingerprint: "device_abc_123",
+      },
+    });
+  });
+
+  it("should forward deviceFingerprint to service.rotateSession in rotate mode", async () => {
+    const mockService: ISessionService = {
+      createSession: jest.fn(),
+      validateSession: jest.fn(),
+      rotateSession: jest.fn().mockResolvedValue({
+        success: true,
+        data: { newToken: "new_token", record: createMockSession() },
+        httpCode: 200,
+      }),
+      revokeSession: jest.fn(),
+      revokeAllSessionsForUser: jest.fn(),
+    };
+
+    const fn = buildValidateFn(mockService, { mode: "rotate" });
+    await fn("old_token", {
+      ipAddress: "127.0.0.1",
+      method: "POST",
+      deviceFingerprint: "device_xyz_789",
+    });
+
+    expect(mockService.rotateSession).toHaveBeenCalledWith({
+      token: "old_token",
+      context: {
+        ipAddress: "127.0.0.1",
+        userAgent: undefined,
+        method: "POST",
+        deviceFingerprint: "device_xyz_789",
+      },
+    });
+  });
+
+  it("should not include deviceFingerprint when not provided", async () => {
+    const mockService: ISessionService = {
+      createSession: jest.fn(),
+      validateSession: jest.fn().mockResolvedValue({
+        success: true,
+        data: createMockSession(),
+        httpCode: 200,
+      }),
+      rotateSession: jest.fn(),
+      revokeSession: jest.fn(),
+      revokeAllSessionsForUser: jest.fn(),
+    };
+
+    const fn = buildValidateFn(mockService);
+    await fn("token", {
+      ipAddress: "127.0.0.1",
+      method: "GET",
+    });
+
+    expect(mockService.validateSession).toHaveBeenCalledWith({
+      token: "token",
+      csrfToken: undefined,
+      context: {
+        ipAddress: "127.0.0.1",
+        userAgent: undefined,
+        method: "GET",
+      },
+    });
+  });
+});
+
+describe("Device Fingerprint Integration (real SessionService + MemoryStoreAdapter)", () => {
+  let mockContext: jest.Mocked<SessionWebContext>;
+
+  beforeEach(() => {
+    mockContext = createMockContext();
+  });
+  const hardFingerprintConfig: SessionLibraryConfig = {
+    env: "test",
+    transport: {
+      mode: "cookie",
+      cookie: {
+        name: "test_sid",
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+      },
+    },
+    expiration: {
+      idleTimeoutSeconds: 3600,
+      absoluteTimeoutSeconds: 86400,
+      rolling: true,
+    },
+    rotation: {
+      gracePeriodSeconds: 30,
+    },
+    security: {
+      enforceTlsInProduction: false,
+      ipBinding: "off",
+      fingerprinting: "hard",
+      csrf: { enabled: false },
+    },
+    device: { enabled: true, cookie: { name: "device_id" } },
+    limits: { maxSessionsPerUser: 5 },
+    store: { provider: "memory" },
+    observability: { debug: false, emitEvents: false, metrics: false },
+  };
+
+  it("should succeed when device cookie matches session fingerprint", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      if (name === "device_id") return "device_abc_123";
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue("device_abc_123");
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(true);
+  });
+
+  it("should reject when device cookie is missing in hard mode", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue(undefined);
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(false);
+  });
+
+  it("should reject when device cookie is wrong in hard mode", async () => {
+    const store = new MemoryStoreAdapter();
+    const service = new SessionService(store, hardFingerprintConfig);
+    const processor = new BridgeProcessor(hardFingerprintConfig);
+
+    const createResult = await service.createSession({
+      userId: "user-1",
+      metadata: { ipAddress: "127.0.0.1", deviceId: "device_abc_123" },
+    });
+    expect(createResult.success).toBe(true);
+    if (!createResult.success) return;
+
+    mockContext.getCookie.mockImplementation((name) => {
+      if (name === "test_sid") return createResult.data.token;
+      if (name === "device_id") return "wrong_device_value";
+      return undefined;
+    });
+    mockContext.getDeviceId.mockReturnValue("wrong_device_value");
+
+    const validateFn = buildValidateFn(service);
+    const result = await processor.handle(mockContext, validateFn);
+
+    expect(result).toBe(false);
   });
 });

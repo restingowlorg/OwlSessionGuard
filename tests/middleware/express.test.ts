@@ -157,4 +157,55 @@ describe("Express Middleware", () => {
     );
     expect(next).toHaveBeenCalled();
   });
+
+  it("should forward deviceFingerprint from device cookie to service", async () => {
+    const deviceConfig: SessionLibraryConfig = {
+      ...baseConfig,
+      device: { enabled: true, cookie: { name: "device_id" } },
+    };
+    const middleware = createExpressMiddleware(mockService, deviceConfig);
+    mockReq.cookies = { sid: "valid_token", device_id: "device_abc_123" };
+
+    mockService.validateSession.mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await middleware(mockReq as Request, mockRes as Response, next);
+
+    expect(mockService.validateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: "valid_token",
+        context: expect.objectContaining({
+          deviceFingerprint: "device_abc_123",
+        }),
+      }),
+    );
+  });
+
+  it("should forward undefined deviceFingerprint when device cookie is absent", async () => {
+    const deviceConfig: SessionLibraryConfig = {
+      ...baseConfig,
+      device: { enabled: true, cookie: { name: "device_id" } },
+    };
+    const middleware = createExpressMiddleware(mockService, deviceConfig);
+    mockReq.cookies = { sid: "valid_token" };
+
+    mockService.validateSession.mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await middleware(mockReq as Request, mockRes as Response, next);
+
+    expect(mockService.validateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.not.objectContaining({
+          deviceFingerprint: expect.anything(),
+        }),
+      }),
+    );
+  });
 });

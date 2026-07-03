@@ -10,6 +10,9 @@ function buildDefaultValidateFn(service: ISessionService): ValidateFunction {
         ipAddress: clientInfo.ipAddress,
         userAgent: clientInfo.userAgent,
         method: clientInfo.method,
+        ...(clientInfo.deviceFingerprint !== undefined
+          ? { deviceFingerprint: clientInfo.deviceFingerprint }
+          : {}),
       },
     });
 
@@ -42,6 +45,9 @@ function buildRotateValidateFn(service: ISessionService): ValidateFunction {
         ipAddress: clientInfo.ipAddress,
         userAgent: clientInfo.userAgent,
         method: clientInfo.method,
+        ...(clientInfo.deviceFingerprint !== undefined
+          ? { deviceFingerprint: clientInfo.deviceFingerprint }
+          : {}),
       },
     });
 

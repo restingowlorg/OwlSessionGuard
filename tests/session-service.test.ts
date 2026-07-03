@@ -249,6 +249,37 @@ describe("SessionService", () => {
         }
       }
     });
+
+    it("should succeed on POST when CSRF is enabled (rotation skips CSRF gate)", async () => {
+      const csrfService = new SessionService(store, {
+        ...config,
+        security: {
+          ...config.security,
+          csrf: {
+            enabled: true,
+            secret: "a".repeat(32),
+          },
+        },
+      });
+
+      const createResult = await csrfService.createSession({
+        userId: "user-1",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(createResult.success).toBe(true);
+      if (!createResult.success) return;
+
+      const rotateResult = await csrfService.rotateSession({
+        token: createResult.data.token,
+        context: {
+          ipAddress: "127.0.0.1",
+          method: "POST",
+        },
+      });
+
+      expect(rotateResult.success).toBe(true);
+    });
   });
 
   describe("revokeSession", () => {
@@ -746,6 +777,7 @@ describe("SessionService", () => {
       if (s1.success) {
         const rotateResult = await roleService.rotateSession({
           token: s1.data.token,
+          context: { ipAddress: "127.0.0.1" },
         });
         expect(rotateResult.success).toBe(true);
       }

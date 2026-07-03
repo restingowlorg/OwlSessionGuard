@@ -121,4 +121,45 @@ describe("Fastify Plugin", () => {
       "new_token",
     );
   });
+
+  it("should forward deviceFingerprint from device cookie to service", async () => {
+    let onRequestHook: Function = () => {};
+    const fastifyMock = {
+      decorateRequest: jest.fn(),
+      addHook: jest.fn((_: string, fn: Function) => {
+        onRequestHook = fn;
+      }),
+    } as unknown as FastifyInstance;
+
+    const deviceConfig: SessionLibraryConfig = {
+      ...config,
+      device: { enabled: true, cookie: { name: "device_id" } },
+    };
+
+    await fastifySessionPlugin(fastifyMock, {
+      service: mockService,
+      config: deviceConfig,
+    });
+
+    mockRequest.cookies = { device_id: "device_abc_123" };
+    mockRequest.headers = { authorization: "Bearer my_token" };
+    mockService.validateSession.mockResolvedValue({
+      success: true,
+      data: createMockSession(),
+      httpCode: 200,
+    });
+
+    await onRequestHook(
+      mockRequest as FastifyRequest,
+      mockReply as FastifyReply,
+    );
+
+    expect(mockService.validateSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          deviceFingerprint: "device_abc_123",
+        }),
+      }),
+    );
+  });
 });
