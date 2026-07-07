@@ -13,5 +13,12 @@
     "skipLibCheck": true,
     "types": ["jest", "node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "**/__tests__/**",
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "**/fixtures/**",
+    "**/mocks/**"
+  ]
 }

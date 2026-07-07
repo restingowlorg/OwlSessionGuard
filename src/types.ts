@@ -414,12 +414,24 @@ export interface SessionSnapshot {
 }
 
 /**
- * Parameters for querying sessions via the store adapter.
+ * Parameters accepted by the store adapter's findAllForUser.
+ * Adapters only handle status filtering — pagination and advanced filters
+ * (deviceFingerprint, role, issuedBefore) are applied by the service layer.
  */
-export interface SessionListParams {
+export interface AdapterListParams {
   status?: SessionStatus;
+}
+
+/**
+ * Parameters for the service-layer listUserSessions method.
+ * Includes adapter-level filters plus service-layer concerns (pagination, device, role, date).
+ */
+export interface SessionListParams extends AdapterListParams {
   limit?: number;
   cursor?: string;
+  deviceFingerprint?: string;
+  role?: string;
+  issuedBefore?: Date;
 }
 
 /**

@@ -3,7 +3,7 @@ import {
   SessionRecord,
   SessionStatus,
   SessionReasonCode,
-  SessionListParams,
+  AdapterListParams,
   SessionListResult,
   SessionLimits,
 } from "../../types";
@@ -250,11 +250,9 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
 
   async findAllForUser(
     userId: string,
-    params?: SessionListParams,
+    params?: AdapterListParams,
   ): Promise<SessionListResult> {
-    const limit = Math.min(Math.max(params?.limit || 20, 1), 100);
     const status = params?.status;
-    const cursor = params?.cursor;
 
     const allUserSessions: SessionRecord[] = [];
     const now = new Date();
@@ -274,30 +272,12 @@ export class MemoryStoreAdapter implements SessionStoreAdapter {
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
     );
 
-    const total = allUserSessions.length;
-
-    // Find cursor position
-    let startIndex = 0;
-    if (cursor) {
-      const cursorIndex = allUserSessions.findIndex((s) => s.id === cursor);
-      if (cursorIndex < 0) {
-        // WHY: Cursor not found means the session was deleted between pages.
-        // Returning empty page is safer than restarting from beginning (silent duplicates).
-        return {
-          sessions: [],
-          total,
-          totalIsApproximate: false,
-          nextCursor: null,
-        };
-      }
-      startIndex = cursorIndex + 1;
-    }
-
-    const page = allUserSessions.slice(startIndex, startIndex + limit);
-    const nextCursor =
-      startIndex + limit < total ? page[page.length - 1]?.id || null : null;
-
-    return { sessions: page, total, totalIsApproximate: false, nextCursor };
+    return {
+      sessions: allUserSessions,
+      total: allUserSessions.length,
+      totalIsApproximate: false,
+      nextCursor: null,
+    };
   }
 
   async acquireLock(key: string, ttlMs: number): Promise<boolean> {

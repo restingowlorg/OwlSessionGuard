@@ -139,20 +139,16 @@ export function runAdapterContractTests(
       expect(revokedResult.sessions[0].id).toBe("revoked");
     });
 
-    test("should findAllForUser paginate with limit and cursor", async () => {
+    test("should findAllForUser return all sessions (pagination handled by service layer)", async () => {
       const userId = uuidv4();
       await adapter.create(createMockRecord({ id: "s1", userId }));
       await adapter.create(createMockRecord({ id: "s2", userId }));
       await adapter.create(createMockRecord({ id: "s3", userId }));
 
-      const page1 = await adapter.findAllForUser(userId, { limit: 2 });
-      expect(page1.sessions.length).toBe(2);
-      expect(page1.total).toBe(3);
-      expect(page1.nextCursor).toBeDefined();
-
-      const page2 = await adapter.findAllForUser(userId, { limit: 2, cursor: page1.nextCursor! });
-      expect(page2.sessions.length).toBe(1);
-      expect(page2.nextCursor).toBeNull();
+      const result = await adapter.findAllForUser(userId, { limit: 2 });
+      expect(result.sessions.length).toBe(3);
+      expect(result.total).toBe(3);
+      expect(result.nextCursor).toBeNull();
     });
 
     test("should findAllForUser return empty for nonexistent user", async () => {
@@ -215,7 +211,7 @@ export function runAdapterContractTests(
       expect(result.sessions[0].id).toBe("valid-active");
     });
 
-    test("should findAllForUser return empty when cursor points to deleted session", async () => {
+    test("should findAllForUser ignore cursor (pagination handled by service layer)", async () => {
       const userId = uuidv4();
       await adapter.create(createMockRecord({ id: "s1", userId }));
 
@@ -223,7 +219,8 @@ export function runAdapterContractTests(
         limit: 1,
         cursor: "nonexistent-id",
       });
-      expect(result.sessions).toEqual([]);
+      expect(result.sessions.length).toBe(1);
+      expect(result.sessions[0].id).toBe("s1");
       expect(result.nextCursor).toBeNull();
     });
 

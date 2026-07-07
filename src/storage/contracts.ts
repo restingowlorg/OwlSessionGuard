@@ -1,6 +1,6 @@
 import {
   SessionRecord,
-  SessionListParams,
+  AdapterListParams,
   SessionListResult,
   SessionReasonCode,
   SessionLimits,
@@ -75,12 +75,13 @@ export interface SessionStoreAdapter {
   countActiveForUser(userId: string): Promise<number>;
 
   /**
-   * List sessions for a user with optional status filter and pagination.
-   * Returns raw SessionRecord[] — projection to SessionSnapshot happens in the service layer.
+   * List sessions for a user with optional status filter.
+   * Returns raw SessionRecord[] — projection to SessionSnapshot and pagination
+   * happen in the service layer.
    */
   findAllForUser(
     userId: string,
-    params?: SessionListParams,
+    params?: AdapterListParams,
   ): Promise<SessionListResult>;
 
   /**

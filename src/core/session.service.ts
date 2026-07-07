@@ -557,19 +557,54 @@ export class SessionService implements ISessionService {
     try {
       const result = await this.store.findAllForUser(userId, {
         status: params?.status,
-        limit: params?.limit,
-        cursor: params?.cursor,
       });
 
-      const snapshots: SessionSnapshot[] = result.sessions.map((r) =>
-        this.toSnapshot(r),
-      );
+      let sessions = result.sessions;
+
+      // 1. Service-layer Filtering
+      if (params?.deviceFingerprint) {
+        sessions = sessions.filter(
+          (s) => s.metadata?.deviceFingerprint === params.deviceFingerprint,
+        );
+      }
+      if (params?.role) {
+        sessions = sessions.filter((s) => s.roles?.includes(params.role!));
+      }
+      if (params?.issuedBefore) {
+        const threshold = new Date(params.issuedBefore).getTime();
+        if (isNaN(threshold)) {
+          return this.fail("Invalid issuedBefore: must be a valid date", 400);
+        }
+        sessions = sessions.filter((s) => s.createdAt.getTime() < threshold);
+      }
+
+      // 2. Pagination
+      const limit = Math.min(Math.max(params?.limit || 20, 1), 100);
+      const cursor = params?.cursor;
+      const total = sessions.length;
+
+      let startIndex = 0;
+      if (cursor) {
+        const cursorIndex = sessions.findIndex((s) => s.id === cursor);
+        if (cursorIndex < 0) {
+          // Cursor not found (e.g. deleted session)
+          sessions = [];
+        } else {
+          startIndex = cursorIndex + 1;
+        }
+      }
+
+      const page = sessions.slice(startIndex, startIndex + limit);
+      const nextCursor =
+        startIndex + limit < total ? page[page.length - 1]?.id || null : null;
+
+      const snapshots: SessionSnapshot[] = page.map((r) => this.toSnapshot(r));
 
       this.emitEvent("sessions.listed", {
         userId,
         status: params?.status || SessionStatus.ACTIVE,
         count: snapshots.length,
-        total: result.total,
+        total,
         timestamp: new Date(),
       });
 
@@ -577,9 +612,14 @@ export class SessionService implements ISessionService {
         success: true,
         data: {
           sessions: snapshots,
-          total: result.total,
+          total,
+          // WHY: totalIsApproximate reflects whether the adapter's scan was truncated
+          // (e.g., Redis SCAN timeout or 10K cap). After service-layer filtering,
+          // the total is the filtered count, but the flag still indicates whether
+          // the adapter saw ALL sessions. If the adapter truncated, the filtered
+          // total is also approximate. Consumers should show "X+" when true.
           totalIsApproximate: result.totalIsApproximate,
-          nextCursor: result.nextCursor,
+          nextCursor,
         },
         httpCode: 200,
       };

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 import { SessionService } from "../src/core/session.service";
 import { DeviceContextExtractor } from "../src/core/device-context-extractor";
 import { MemoryStoreAdapter } from "../src/storage/adapters/memory.adapter";
@@ -53,14 +54,17 @@ describe("SessionService", () => {
         userId: string;
         deviceContext: Record<string, string | number | boolean>;
       }>((resolve) => {
-        eventService.on("session.fallback_fingerprint", (...args: unknown[]) => {
-          const payload = args[0] as {
-            sessionId: string;
-            userId: string;
-            deviceContext: Record<string, string | number | boolean>;
-          };
-          resolve(payload);
-        });
+        eventService.on(
+          "session.fallback_fingerprint",
+          (...args: unknown[]) => {
+            const payload = args[0] as {
+              sessionId: string;
+              userId: string;
+              deviceContext: Record<string, string | number | boolean>;
+            };
+            resolve(payload);
+          },
+        );
       });
 
       const result = await eventService.createSession({
@@ -114,9 +118,11 @@ describe("SessionService", () => {
     });
 
     it("should fall back to UUID fingerprint when DeviceContextExtractor throws", async () => {
-      const extractSpy = jest.spyOn(DeviceContextExtractor, "extract").mockImplementation(() => {
-        throw new Error("extractor failure");
-      });
+      const extractSpy = jest
+        .spyOn(DeviceContextExtractor, "extract")
+        .mockImplementation(() => {
+          throw new Error("extractor failure");
+        });
 
       const eventService = new SessionService(store, {
         ...config,
@@ -129,11 +135,13 @@ describe("SessionService", () => {
         metadata: { ipAddress: string; userAgent?: string };
       }>((resolve) => {
         eventService.on("security.extractor_failed", (payload: unknown) => {
-          resolve(payload as {
-            userId: string;
-            error: string;
-            metadata: { ipAddress: string; userAgent?: string };
-          });
+          resolve(
+            payload as {
+              userId: string;
+              error: string;
+              metadata: { ipAddress: string; userAgent?: string };
+            },
+          );
         });
       });
 
@@ -144,7 +152,9 @@ describe("SessionService", () => {
 
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.record.metadata.deviceFingerprint).toMatch(/^fallback_/);
+        expect(result.data.record.metadata.deviceFingerprint).toMatch(
+          /^fallback_/,
+        );
       }
 
       const eventPayload = await eventPromise;
@@ -338,11 +348,11 @@ describe("SessionService", () => {
       if (result.success) {
         expect(result.data.sessions.length).toBe(2);
         expect(result.data.total).toBe(2);
-        expect(result.data.sessions[0].userId).toBeUndefined();
-        expect(result.data.sessions[0].tokenHash).toBeUndefined();
-        expect(result.data.sessions[0].csrfToken).toBeUndefined();
-        expect(result.data.sessions[0].parentSessionId).toBeUndefined();
-        expect(result.data.sessions[0].childSessionId).toBeUndefined();
+        expect(result.data.sessions[0]).not.toHaveProperty("userId");
+        expect(result.data.sessions[0]).not.toHaveProperty("tokenHash");
+        expect(result.data.sessions[0]).not.toHaveProperty("csrfToken");
+        expect(result.data.sessions[0]).not.toHaveProperty("parentSessionId");
+        expect(result.data.sessions[0]).not.toHaveProperty("childSessionId");
       }
     });
 
@@ -462,22 +472,14 @@ describe("SessionService", () => {
         expect(snapshot.expiresAt).toBeInstanceOf(Date);
 
         // Should NOT have secret/internal fields
-        expect((snapshot as Record<string, unknown>).tokenHash).toBeUndefined();
-        expect((snapshot as Record<string, unknown>).csrfToken).toBeUndefined();
-        expect((snapshot as Record<string, unknown>).userId).toBeUndefined();
-        expect((snapshot as Record<string, unknown>).ipAddress).toBeUndefined();
-        expect(
-          (snapshot as Record<string, unknown>).userAgent,
-        ).toBeUndefined();
-        expect(
-          (snapshot as Record<string, unknown>).deviceContext,
-        ).toBeUndefined();
-        expect(
-          (snapshot as Record<string, unknown>).parentSessionId,
-        ).toBeUndefined();
-        expect(
-          (snapshot as Record<string, unknown>).childSessionId,
-        ).toBeUndefined();
+        expect(snapshot).not.toHaveProperty("tokenHash");
+        expect(snapshot).not.toHaveProperty("csrfToken");
+        expect(snapshot).not.toHaveProperty("userId");
+        expect(snapshot).not.toHaveProperty("ipAddress");
+        expect(snapshot).not.toHaveProperty("userAgent");
+        expect(snapshot).not.toHaveProperty("deviceContext");
+        expect(snapshot).not.toHaveProperty("parentSessionId");
+        expect(snapshot).not.toHaveProperty("childSessionId");
       }
     });
 
@@ -563,7 +565,11 @@ describe("SessionService", () => {
     it("should not include expired ACTIVE sessions in listing", async () => {
       const shortConfig: SessionLibraryConfig = {
         ...config,
-        expiration: { absoluteTimeoutSeconds: -1, idleTimeoutSeconds: -1, rolling: false },
+        expiration: {
+          absoluteTimeoutSeconds: -1,
+          idleTimeoutSeconds: -1,
+          rolling: false,
+        },
       };
       const shortService = new SessionService(
         new MemoryStoreAdapter(),
@@ -580,6 +586,199 @@ describe("SessionService", () => {
       if (result.success) {
         expect(result.data.sessions.length).toBe(0);
         expect(result.data.totalIsApproximate).toBe(false);
+      }
+    });
+  });
+
+  describe("listUserSessions — filtering", () => {
+    it("should filter by device fingerprint", async () => {
+      const extractSpy = jest
+        .spyOn(DeviceContextExtractor, "extract")
+        .mockReturnValueOnce({ deviceFingerprint: "fp-1", deviceContext: {} })
+        .mockReturnValueOnce({ deviceFingerprint: "fp-2", deviceContext: {} });
+
+      const s1 = await service.createSession({
+        userId: "user-filter",
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+      await service.createSession({
+        userId: "user-filter",
+        metadata: { ipAddress: "10.0.0.2" },
+      });
+
+      const result = await service.listUserSessions("user-filter", {
+        deviceFingerprint: "fp-1",
+      });
+      expect(result.success).toBe(true);
+      if (result.success && s1.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.sessions[0].sessionId).toBe(s1.data.record.id);
+      }
+      extractSpy.mockRestore();
+    });
+
+    it("should filter by role", async () => {
+      const s1 = await service.createSession({
+        userId: "user-filter",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+      await service.createSession({
+        userId: "user-filter",
+        roles: ["USER"],
+        metadata: { ipAddress: "10.0.0.2" },
+      });
+
+      const result = await service.listUserSessions("user-filter", {
+        role: "ADMIN",
+      });
+      expect(result.success).toBe(true);
+      if (result.success && s1.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.sessions[0].sessionId).toBe(s1.data.record.id);
+      }
+    });
+
+    it("should filter by issued-before date", async () => {
+      const pastDate = new Date(Date.now() - 10000);
+      const recentDate = new Date();
+
+      jest.useFakeTimers();
+      jest.setSystemTime(pastDate);
+      const s1 = await service.createSession({
+        userId: "user-filter",
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+
+      jest.setSystemTime(recentDate);
+      await service.createSession({
+        userId: "user-filter",
+        metadata: { ipAddress: "10.0.0.2" },
+      });
+
+      const threshold = new Date(pastDate.getTime() + 5000);
+      const result = await service.listUserSessions("user-filter", {
+        issuedBefore: threshold,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success && s1.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.sessions[0].sessionId).toBe(s1.data.record.id);
+      }
+      jest.useRealTimers();
+    });
+
+    it("should return empty results when no sessions match filters", async () => {
+      await service.createSession({
+        userId: "user-filter",
+        roles: ["USER"],
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+
+      const result = await service.listUserSessions("user-filter", {
+        role: "SUPER_ADMIN",
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sessions.length).toBe(0);
+      }
+    });
+
+    it("should apply combined filters correctly", async () => {
+      const extractSpy = jest
+        .spyOn(DeviceContextExtractor, "extract")
+        .mockReturnValueOnce({ deviceFingerprint: "fp-1", deviceContext: {} })
+        .mockReturnValueOnce({ deviceFingerprint: "fp-1", deviceContext: {} })
+        .mockReturnValueOnce({ deviceFingerprint: "fp-2", deviceContext: {} });
+
+      const pastDate = new Date(Date.now() - 10000);
+      jest.useFakeTimers();
+      jest.setSystemTime(pastDate);
+
+      // Match all criteria
+      const s1 = await service.createSession({
+        userId: "user-filter",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+
+      // Match fp, but not role
+      await service.createSession({
+        userId: "user-filter",
+        roles: ["USER"],
+        metadata: { ipAddress: "10.0.0.2" },
+      });
+
+      jest.setSystemTime(new Date());
+      // Match role, but not fp and not date (from mocked extract call #3)
+      await service.createSession({
+        userId: "user-filter",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "10.0.0.3" },
+      });
+
+      const threshold = new Date(pastDate.getTime() + 5000);
+      const result = await service.listUserSessions("user-filter", {
+        deviceFingerprint: "fp-1",
+        role: "ADMIN",
+        issuedBefore: threshold,
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success && s1.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.sessions[0].sessionId).toBe(s1.data.record.id);
+      }
+
+      extractSpy.mockRestore();
+      jest.useRealTimers();
+    });
+
+    it("should isolate cross-user sessions even with matching filters", async () => {
+      const s1 = await service.createSession({
+        userId: "user-A",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "10.0.0.1" },
+      });
+      await service.createSession({
+        userId: "user-B",
+        roles: ["ADMIN"],
+        metadata: { ipAddress: "10.0.0.2" },
+      });
+
+      const result = await service.listUserSessions("user-A", {
+        role: "ADMIN",
+      });
+      expect(result.success).toBe(true);
+      if (result.success && s1.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.sessions[0].sessionId).toBe(s1.data.record.id);
+      }
+    });
+
+    it("should respect pagination limit alongside filters", async () => {
+      const pagedService = new SessionService(store, {
+        ...config,
+        limits: { maxSessionsPerUser: 10 },
+      });
+
+      for (let i = 0; i < 3; i++) {
+        await pagedService.createSession({
+          userId: "user-paginate",
+          roles: ["ADMIN"],
+          metadata: { ipAddress: "10.0.0." + i },
+        });
+      }
+
+      const result = await pagedService.listUserSessions("user-paginate", {
+        role: "ADMIN",
+        limit: 1,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sessions.length).toBe(1);
+        expect(result.data.nextCursor).toBeDefined();
       }
     });
   });
@@ -641,7 +840,9 @@ describe("SessionService", () => {
       });
       expect(result2.success).toBe(false);
       if (!result2.success) {
-        expect(result2.error.message).toContain("exceeded maximum session limit");
+        expect(result2.error.message).toContain(
+          "exceeded maximum session limit",
+        );
       }
     });
 
@@ -784,7 +985,10 @@ describe("SessionService", () => {
 
       // Now revoke one session to free a slot, then try creating a third
       if (s2.success) {
-        await roleService.revokeSession({ token: s2.data.token });
+        await roleService.revokeSession({
+          token: s2.data.token,
+          reason: SessionReasonCode.MANUAL_LOGOUT,
+        });
       }
 
       const s3 = await roleService.createSession({
