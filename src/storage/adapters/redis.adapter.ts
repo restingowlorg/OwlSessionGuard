@@ -827,6 +827,13 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         for (const result of results) {
           if (!result || result[0] || !result[1]) continue;
           const record = this.parseRecord(result[1] as string);
+          if (record.status === SessionStatus.ACTIVE) {
+            if (
+              record.expiresAt.getTime() <= now ||
+              record.idleExpiresAt.getTime() <= now
+            )
+              continue;
+          }
           sessions.push(record);
         }
       }

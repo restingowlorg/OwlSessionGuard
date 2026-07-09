@@ -779,6 +779,24 @@ describe("SessionService", () => {
       if (result.success) {
         expect(result.data.sessions.length).toBe(1);
         expect(result.data.nextCursor).toBeDefined();
+
+        // Fetch remaining pages and assert no duplicates or skips
+        const allIds: string[] = [result.data.sessions[0].sessionId];
+        let cursor = result.data.nextCursor!;
+        while (cursor) {
+          const next = await pagedService.listUserSessions("user-paginate", {
+            role: "ADMIN",
+            limit: 1,
+            cursor,
+          });
+          expect(next.success).toBe(true);
+          if (next.success) {
+            allIds.push(...next.data.sessions.map((s) => s.sessionId));
+            cursor = next.data.nextCursor!;
+          }
+        }
+        expect(allIds.length).toBe(3);
+        expect(new Set(allIds).size).toBe(3);
       }
     });
   });

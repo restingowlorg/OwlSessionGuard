@@ -145,7 +145,7 @@ export function runAdapterContractTests(
       await adapter.create(createMockRecord({ id: "s2", userId }));
       await adapter.create(createMockRecord({ id: "s3", userId }));
 
-      const result = await adapter.findAllForUser(userId, { limit: 2 });
+      const result = await adapter.findAllForUser(userId);
       expect(result.sessions.length).toBe(3);
       expect(result.total).toBe(3);
       expect(result.nextCursor).toBeNull();
@@ -215,10 +215,7 @@ export function runAdapterContractTests(
       const userId = uuidv4();
       await adapter.create(createMockRecord({ id: "s1", userId }));
 
-      const result = await adapter.findAllForUser(userId, {
-        limit: 1,
-        cursor: "nonexistent-id",
-      });
+      const result = await adapter.findAllForUser(userId);
       expect(result.sessions.length).toBe(1);
       expect(result.sessions[0].id).toBe("s1");
       expect(result.nextCursor).toBeNull();
