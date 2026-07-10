@@ -8,12 +8,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc --declaration",
+    "build": "tsc --declaration && npm run check:package",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "format:check": "prettier --check src/**/*.ts",
-    "test": "jest"
+    "test": "jest",
+    "check:package": "node scripts/check-package.js"
   },
   "lint-staged": {
     "src/**/*.ts": [

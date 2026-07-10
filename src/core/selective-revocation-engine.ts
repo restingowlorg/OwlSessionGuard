@@ -215,12 +215,13 @@ export class SelectiveRevocationEngine {
    * WHY: Uses store.findLiveSessionsForUser when available (efficient, only ACTIVE + ROTATED).
    * Falls back to findAllForUser + filter for adapters that don't implement it.
    * No redundant REVOKED/EXPIRED checks downstream — this method guarantees clean input.
+   * NOTE: findAllForUser now returns ALL sessions (pagination is service-layer).
    */
   private async fetchLiveSessions(userId: string) {
     if (this.store.findLiveSessionsForUser) {
       return this.store.findLiveSessionsForUser(userId);
     }
-    const result = await this.store.findAllForUser(userId, { limit: 10000 });
+    const result = await this.store.findAllForUser(userId);
     return result.sessions.filter(
       (s) =>
         s.status !== SessionStatus.REVOKED &&

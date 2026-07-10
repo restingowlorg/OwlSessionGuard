@@ -4,7 +4,7 @@ import {
   SessionRecord,
   SessionStatus,
   SessionReasonCode,
-  SessionListParams,
+  AdapterListParams,
   SessionListResult,
   SessionLimits,
 } from "../../types";
@@ -789,11 +789,9 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
   async findAllForUser(
     userId: string,
-    params?: SessionListParams,
+    params?: AdapterListParams,
   ): Promise<SessionListResult> {
-    const limit = Math.min(Math.max(params?.limit || 20, 1), 100);
     const status = params?.status;
-    const cursor = params?.cursor;
     const userKey = this.key("idx:user", userId);
     const now = Date.now();
 
@@ -828,37 +826,27 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       if (results) {
         for (const result of results) {
           if (!result || result[0] || !result[1]) continue;
-          sessions.push(this.parseRecord(result[1] as string));
+          const record = this.parseRecord(result[1] as string);
+          if (record.status === SessionStatus.ACTIVE) {
+            if (
+              record.expiresAt.getTime() <= now ||
+              record.idleExpiresAt.getTime() <= now
+            )
+              continue;
+          }
+          sessions.push(record);
         }
       }
 
       // Sort by createdAt descending to match Memory adapter's sort order
       sessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
-      const total = sessions.length;
-
-      // Cursor-based pagination on the sorted-in-memory array
-      let startIndex = 0;
-      if (cursor) {
-        const cursorIndex = sessions.findIndex((s) => s.id === cursor);
-        if (cursorIndex < 0) {
-          // WHY: Cursor not found means the session was deleted between pages.
-          // Returning empty page is safer than restarting from beginning.
-          return {
-            sessions: [],
-            total,
-            totalIsApproximate: false,
-            nextCursor: null,
-          };
-        }
-        startIndex = cursorIndex + 1;
-      }
-
-      const page = sessions.slice(startIndex, startIndex + limit);
-      const nextCursor =
-        startIndex + limit < total ? page[page.length - 1]?.id || null : null;
-
-      return { sessions: page, total, totalIsApproximate: false, nextCursor };
+      return {
+        sessions,
+        total: sessions.length,
+        totalIsApproximate: false,
+        nextCursor: null,
+      };
     }
 
     // For non-active statuses, scan session keys and filter in memory.
@@ -911,7 +899,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         scanTruncated = true;
         break;
       }
-    } while (cursorVal !== "0" && found.length < limit + 1);
+    } while (cursorVal !== "0");
 
     // Sort by createdAt descending
     found.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -920,29 +908,11 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     // If SCAN hit the 10K key cap or 5s timeout, this total is APPROXIMATE.
     const total = found.length;
 
-    let startIndex = 0;
-    if (cursor) {
-      const cursorIndex = found.findIndex((s) => s.id === cursor);
-      if (cursorIndex < 0) {
-        return {
-          sessions: [],
-          total,
-          totalIsApproximate: true,
-          nextCursor: null,
-        };
-      }
-      startIndex = cursorIndex + 1;
-    }
-
-    const page = found.slice(startIndex, startIndex + limit);
-    const nextCursor =
-      startIndex + limit < total ? page[page.length - 1]?.id || null : null;
-
     return {
-      sessions: page,
+      sessions: found,
       total,
       totalIsApproximate: scanTruncated,
-      nextCursor,
+      nextCursor: null,
     };
   }
 
