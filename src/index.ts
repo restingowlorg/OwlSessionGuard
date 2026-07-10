@@ -8,3 +8,4 @@ export * from "./middleware/express";
 export * from "./middleware/fastify";
 export * from "./middleware/nestjs";
 export * from "./core/selective-revocation-engine";
+export * from "./core/session.service";

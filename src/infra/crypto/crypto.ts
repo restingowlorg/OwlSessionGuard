@@ -1,5 +1,4 @@
 import * as crypto from "crypto";
-import * as CryptoJS from "crypto-js";
 
 // ---------------- Session Helpers (Performance Optimized) ----------------
 /**
@@ -7,15 +6,16 @@ import * as CryptoJS from "crypto-js";
  * Used for session lookups where bcrypt is too slow.
  */
 export function fastHash(data: string): string {
-  return CryptoJS.SHA256(data).toString(CryptoJS.enc.Hex);
+  return crypto.createHash("sha256").update(data).digest("hex");
 }
 
 /**
  * Generates a Base64URL encoded secure token for sessions.
  */
 export function generateBase64UrlToken(length = 32): string {
-  return CryptoJS.lib.WordArray.random(length)
-    .toString(CryptoJS.enc.Base64)
+  return crypto
+    .randomBytes(length)
+    .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
