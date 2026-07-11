@@ -1,5 +1,4 @@
 import Redis from "ioredis";
-import { GenericContainer, StartedTestContainer } from "testcontainers";
 import { RedisStoreAdapter } from "../../src/storage/adapters/redis.adapter";
 import { runAdapterContractTests } from "./adapter-contract.suite";
 import { SessionStatus } from "../../src/types";
@@ -27,13 +26,14 @@ const describeRedis = RUN_REDIS_TESTS ? describe : describe.skip;
 
 describeRedis("Redis Integration Tests (Real Redis)", () => {
   let redis: Redis;
-  let container: StartedTestContainer | null = null;
+  let container: { stop: () => Promise<void>; getHost: () => string; getMappedPort: (port: number) => number } | null = null;
 
   beforeAll(async () => {
     let redisUrl = REDIS_URL;
 
     // If no REDIS_URL provided, spin up a Redis container
     if (!redisUrl) {
+      const { GenericContainer } = require("testcontainers");
       container = await new GenericContainer("redis:7.2.3")
         .withExposedPorts(6379)
         .withCommand(["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"])

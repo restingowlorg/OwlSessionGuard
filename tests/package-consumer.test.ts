@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { execSync } from "child_process";
 
 const DIST = path.resolve(__dirname, "..", "dist");
 
@@ -224,4 +225,51 @@ describe("Consumer: Exports map matches dist/", () => {
     expect(fs.existsSync(jsPath)).toBe(true);
     expect(fs.existsSync(dtsPath)).toBe(true);
   });
+
+  test.each(subpaths)('exports map entry "%s" should have ESM conditions (import + default)', (subpath) => {
+    const entry = pkg.exports[subpath];
+    expect(entry).toBeDefined();
+    expect(entry.import).toBeDefined();
+    expect(entry.default).toBeDefined();
+    expect(entry.import).toBe(entry.require);
+    expect(entry.default).toBe(entry.require);
+  });
+
+  test.each(subpaths)('exports map entry "%s" should have types first', (subpath) => {
+    const entry = pkg.exports[subpath];
+    const keys = Object.keys(entry);
+    expect(keys[0]).toBe("types");
+  });
+});
+
+describe("Consumer: ESM import boundary", () => {
+  const PKG_ROOT = path.resolve(__dirname, "..");
+
+  const esmSubpaths = [
+    { subpath: ".", specifier: "@restingowlorg/owl-session" },
+    { subpath: "./storage", specifier: "@restingowlorg/owl-session/storage" },
+    { subpath: "./storage/memory", specifier: "@restingowlorg/owl-session/storage/memory" },
+    { subpath: "./storage/redis", specifier: "@restingowlorg/owl-session/storage/redis" },
+    { subpath: "./express", specifier: "@restingowlorg/owl-session/express" },
+    { subpath: "./fastify", specifier: "@restingowlorg/owl-session/fastify" },
+    { subpath: "./nestjs", specifier: "@restingowlorg/owl-session/nestjs" },
+  ];
+
+  test.each(esmSubpaths)(
+    'ESM import("$specifier") should resolve without ERR_PACKAGE_PATH_NOT_EXPORTED',
+    ({ specifier }) => {
+      const script = `import("${specifier}").then(() => console.log("OK")).catch(e => { console.error(e.message); process.exit(1); });`;
+      try {
+        execSync(`node --input-type=module -e "${script}"`, {
+          cwd: PKG_ROOT,
+          timeout: 10000,
+          stdio: "pipe",
+        });
+      } catch (err: any) {
+        const stderr = err.stderr?.toString() || "";
+        expect(stderr).not.toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
+        expect(stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+      }
+    },
+  );
 });

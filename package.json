@@ -1,37 +1,51 @@
 {
-  "name": "@restingowlorg/owl-session",
+  "name": "@restingowlorg/owl-session-guard",
   "version": "1.0.1",
   "description": "A framework-agnostic, database-agnostic session management library for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/root.d.ts",
+      "import": "./dist/root.js",
       "require": "./dist/root.js",
-      "types": "./dist/root.d.ts"
+      "default": "./dist/root.js"
     },
     "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js",
       "require": "./dist/storage.js",
-      "types": "./dist/storage.d.ts"
+      "default": "./dist/storage.js"
     },
     "./storage/memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js",
       "require": "./dist/memory.js",
-      "types": "./dist/memory.d.ts"
+      "default": "./dist/memory.js"
     },
     "./storage/redis": {
+      "types": "./dist/redis.d.ts",
+      "import": "./dist/redis.js",
       "require": "./dist/redis.js",
-      "types": "./dist/redis.d.ts"
+      "default": "./dist/redis.js"
     },
     "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.js",
       "require": "./dist/express.js",
-      "types": "./dist/express.d.ts"
+      "default": "./dist/express.js"
     },
     "./fastify": {
+      "types": "./dist/fastify.d.ts",
+      "import": "./dist/fastify.js",
       "require": "./dist/fastify.js",
-      "types": "./dist/fastify.d.ts"
+      "default": "./dist/fastify.js"
     },
     "./nestjs": {
+      "types": "./dist/nestjs.d.ts",
+      "import": "./dist/nestjs.js",
       "require": "./dist/nestjs.js",
-      "types": "./dist/nestjs.d.ts"
+      "default": "./dist/nestjs.js"
     }
   },
   "files": [
@@ -43,7 +57,7 @@
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "format:check": "prettier --check src/**/*.ts",
-    "test": "jest --testPathPattern='(?!redis\\.integration)'",
+    "test": "jest --testPathIgnorePatterns='redis.integration'",
     "test:redis": "cross-env RUN_REDIS_TESTS=true jest tests/storage/redis.integration.test.ts",
     "test:all": "npm test && npm run test:redis",
     "check:package": "node scripts/check-package.js"
@@ -70,7 +84,7 @@
     "backend",
     "nodejs"
   ],
-  "author": "",
+  "author": "restingowl",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -135,6 +149,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/OSSecPlatform/ossec-auth-library"
+    "url": "https://github.com/restingowlorg/OwlSessionGuard.git"
   }
 }
