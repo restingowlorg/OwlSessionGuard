@@ -4,7 +4,7 @@ module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.ts', '**/src/**/*.spec.ts'],
   verbose: true,
-  forceExit: true,
+  setupFiles: ['./tests/setup.js'],
   clearMocks: true,
   resetMocks: true,
   restoreMocks: true,

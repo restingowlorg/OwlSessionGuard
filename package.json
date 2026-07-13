@@ -60,7 +60,8 @@
     "test": "jest --testPathIgnorePatterns='redis.integration'",
     "test:redis": "cross-env RUN_REDIS_TESTS=true jest tests/storage/redis.integration.test.ts",
     "test:all": "npm test && npm run test:redis",
-    "check:package": "node scripts/check-package.js"
+    "check:package": "node scripts/check-package.js",
+    "release:validate": "npm run format:check && npm run lint -- --max-warnings=0 && npm run typecheck && npm run build && npm test && npm run test:redis && npm run check:package && node scripts/smoke-consumer.js"
   },
   "lint-staged": {
     "src/**/*.ts": [
