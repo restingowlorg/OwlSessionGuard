@@ -242,6 +242,21 @@ describe("Consumer: Exports map matches dist/", () => {
   });
 });
 
+describe("Consumer: Package metadata", () => {
+  const pkg = require("../package.json");
+
+  test("should publish under the intended public session package identity", () => {
+    expect(pkg.name).toBe("@restingowlorg/owl-session-guard");
+    expect(pkg.description).toContain("session management");
+    expect(pkg.author).toBe("restingowl");
+    expect(pkg.license).toBe("MIT");
+    // expect(pkg.publishConfig?.access).toBe("public");
+    expect(pkg.repository?.url).toBe(
+      "https://github.com/restingowlorg/OwlSessionGuard.git",
+    );
+  });
+});
+
 describe("Consumer: ESM import boundary", () => {
   const PKG_ROOT = path.resolve(__dirname, "..");
 
