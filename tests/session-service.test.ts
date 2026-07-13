@@ -1290,4 +1290,218 @@ describe("SessionService", () => {
       }
     });
   });
+
+  describe("error message sanitization", () => {
+    const rawErrors = [
+      "ECONNREFUSED 127.0.0.1:6379",
+      "Redis connection timed out after 30000ms",
+      "read ECONNRESET",
+      "ENOTFOUND redis-cluster.internal",
+      "Connection terminated unexpectedly",
+    ];
+
+    it("should not leak raw error from createSession", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      jest
+        .spyOn(store, "create")
+        .mockRejectedValue(new Error(rawErrors[0]));
+
+      const result = await errorService.createSession({
+        userId: "user-err",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toBe("Failed to create session");
+        expect(result.error.message).not.toContain(rawErrors[0]);
+        expect(result.error.code).toBe("INTERNAL_ERROR");
+      }
+    });
+
+    it("should not leak raw error from validateSession", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      jest
+        .spyOn(store, "findByTokenHash")
+        .mockRejectedValue(new Error(rawErrors[1]));
+
+      const result = await errorService.validateSession({
+        token: "some-token",
+        context: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toBe("Validation error");
+        expect(result.error.message).not.toContain(rawErrors[1]);
+      }
+    });
+
+    it("should not leak raw error from rotateSession", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      jest
+        .spyOn(store, "findByTokenHash")
+        .mockResolvedValue({
+          id: "sess-1",
+          userId: "user-err",
+          tokenHash: "hash",
+          status: SessionStatus.ACTIVE,
+          roles: [],
+          scopes: [],
+          createdAt: new Date(),
+          lastUsedAt: new Date(),
+          expiresAt: new Date(Date.now() + 86400000),
+          idleExpiresAt: new Date(Date.now() + 86400000),
+          metadata: { ipAddress: "127.0.0.1" },
+        });
+
+      jest
+        .spyOn(store, "rotate")
+        .mockRejectedValue(new Error(rawErrors[2]));
+
+      const result = await errorService.rotateSession({
+        token: "some-token",
+        context: { ipAddress: "127.0.0.1" },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toBe("Rotation error");
+        expect(result.error.message).not.toContain(rawErrors[2]);
+      }
+    });
+
+    it("should not leak raw error from revokeSession", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      jest
+        .spyOn(store, "findByTokenHash")
+        .mockResolvedValue({
+          id: "sess-2",
+          userId: "user-err",
+          tokenHash: "hash",
+          status: SessionStatus.ACTIVE,
+          roles: [],
+          scopes: [],
+          createdAt: new Date(),
+          lastUsedAt: new Date(),
+          expiresAt: new Date(),
+          idleExpiresAt: new Date(),
+          metadata: {},
+        });
+
+      jest
+        .spyOn(store, "update")
+        .mockRejectedValue(new Error(rawErrors[3]));
+
+      const result = await errorService.revokeSession({
+        token: "some-token",
+        reason: SessionReasonCode.MANUAL_LOGOUT,
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toBe("Revocation error");
+        expect(result.error.message).not.toContain(rawErrors[3]);
+      }
+    });
+
+    it("should not leak raw error from listUserSessions", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      jest
+        .spyOn(store, "findAllForUser")
+        .mockRejectedValue(new Error(rawErrors[4]));
+
+      const result = await errorService.listUserSessions("user-err");
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.message).toBe("Failed to list sessions");
+        expect(result.error.message).not.toContain(rawErrors[4]);
+        expect(result.error.code).toBe("STORAGE_ERROR");
+      }
+    });
+
+    it("should emit internal_error telemetry for createSession failures", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<Record<string, unknown>>(
+        (resolve) => {
+          errorService.on("internal_error", (...args: unknown[]) => {
+            resolve(args[0] as Record<string, unknown>);
+          });
+        },
+      );
+
+      jest
+        .spyOn(store, "create")
+        .mockRejectedValue(new Error(rawErrors[0]));
+
+      await errorService.createSession({
+        userId: "user-err",
+        metadata: { ipAddress: "127.0.0.1" },
+      });
+
+      const payload = await eventPromise;
+      expect(payload.context).toBe("Failed to create session");
+      expect(payload.error).toBeDefined();
+      if (typeof payload.error === "object" && payload.error !== null) {
+        expect((payload.error as Record<string, string>).message).toBe(
+          rawErrors[0],
+        );
+      }
+    });
+
+    it("should emit internal_error telemetry for listUserSessions failures", async () => {
+      const errorService = new SessionService(store, {
+        ...config,
+        observability: { ...config.observability, emitEvents: true },
+      });
+
+      const eventPromise = new Promise<Record<string, unknown>>(
+        (resolve) => {
+          errorService.on("internal_error", (...args: unknown[]) => {
+            resolve(args[0] as Record<string, unknown>);
+          });
+        },
+      );
+
+      jest
+        .spyOn(store, "findAllForUser")
+        .mockRejectedValue(new Error(rawErrors[1]));
+
+      await errorService.listUserSessions("user-err");
+
+      const payload = await eventPromise;
+      expect(payload.context).toBe("listUserSessions");
+      expect(payload.error).toBeDefined();
+      if (typeof payload.error === "object" && payload.error !== null) {
+        expect((payload.error as Record<string, string>).message).toBe(
+          rawErrors[1],
+        );
+      }
+    });
+  });
 });
