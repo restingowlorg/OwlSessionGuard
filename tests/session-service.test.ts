@@ -1466,12 +1466,11 @@ describe("SessionService", () => {
 
       const payload = await eventPromise;
       expect(payload.context).toBe("Failed to create session");
-      expect(payload.error).toBeDefined();
-      if (typeof payload.error === "object" && payload.error !== null) {
-        expect((payload.error as Record<string, string>).message).toBe(
-          rawErrors[0],
-        );
-      }
+      expect(payload.errorClass).toBe("Error");
+      expect(payload.category).toBe("storage");
+      expect(typeof payload.errorId).toBe("string");
+      expect(payload.error).toBeUndefined();
+      expect(JSON.stringify(payload)).not.toContain(rawErrors[0]);
     });
 
     it("should emit internal_error telemetry for listUserSessions failures", async () => {
@@ -1496,12 +1495,11 @@ describe("SessionService", () => {
 
       const payload = await eventPromise;
       expect(payload.context).toBe("listUserSessions");
-      expect(payload.error).toBeDefined();
-      if (typeof payload.error === "object" && payload.error !== null) {
-        expect((payload.error as Record<string, string>).message).toBe(
-          rawErrors[1],
-        );
-      }
+      expect(payload.errorClass).toBe("Error");
+      expect(payload.category).toBe("storage");
+      expect(typeof payload.errorId).toBe("string");
+      expect(payload.error).toBeUndefined();
+      expect(JSON.stringify(payload)).not.toContain(rawErrors[1]);
     });
   });
 });

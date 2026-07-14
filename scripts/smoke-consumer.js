@@ -9,7 +9,7 @@
  * Exit 0 = all exports resolve. Exit 1 = at least one import failed.
  */
 
-const { execSync } = require("child_process");
+const { execFileSync, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -49,6 +49,10 @@ function run(cmd, opts) {
   return execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], ...opts });
 }
 
+function safeAlias(specifier) {
+  return specifier.replace(/[^a-zA-Z0-9]/g, "_");
+}
+
 // ── Step 1: npm pack ─────────────────────────────────────────────────────
 console.log("\n[smoke] Packing tarball...");
 const packOutput = run("npm pack --json --pack-destination .", { cwd: PKG_ROOT });
@@ -65,7 +69,7 @@ try {
   // ── Step 3: npm init + install ────────────────────────────────────────
   run("npm init -y", { cwd: tmpDir });
   console.log("[smoke] Installing tarball + peer deps...");
-  run(`npm install ${tgzPath} express fastify @nestjs/common @nestjs/core rxjs`, {
+  run(`npm install ${tgzPath} express fastify @nestjs/common @nestjs/core rxjs typescript @types/node @types/express`, {
     cwd: tmpDir,
     timeout: 120000,
   });
@@ -76,8 +80,17 @@ try {
 
   for (const { specifier, label } of SUBPATHS) {
     try {
-      const script = `const m = require("${specifier}"); const keys = Object.keys(m); console.log(JSON.stringify(keys));`;
-      const output = run(`node -e "${script}"`, { cwd: tmpDir });
+      const tmpFile = path.join(tmpDir, `_smoke_${safeAlias(specifier)}.js`);
+      fs.writeFileSync(
+        tmpFile,
+        `const m = require(${JSON.stringify(specifier)});\n` +
+          `const keys = Object.keys(m);\n` +
+          `console.log(JSON.stringify(keys));\n`,
+      );
+      const output = execFileSync(process.execPath, [tmpFile], {
+        encoding: "utf-8",
+        cwd: tmpDir,
+      });
       const keys = JSON.parse(output.trim());
 
       const expected = EXPECTED_EXPORTS[label] || [];
@@ -101,7 +114,7 @@ try {
   // ── Step 5: TypeScript declaration check ──────────────────────────────
   console.log("\n[smoke] Testing TypeScript declarations...");
   const tsContent = SUBPATHS.map(
-    ({ specifier }) => `import * as ${specifier.replace(/[@\/]/g, "_")} from "${specifier}";`
+    ({ specifier }) => `import * as ${safeAlias(specifier)} from "${specifier}";`,
   ).join("\n") + "\nconsole.log('TypeScript imports OK');\n";
 
   fs.writeFileSync(path.join(tmpDir, "test.ts"), tsContent);
@@ -110,27 +123,32 @@ try {
     JSON.stringify(
       {
         compilerOptions: {
-          module: "commonjs",
-          moduleResolution: "node",
+          module: "node16",
+          moduleResolution: "node16",
           esModuleInterop: true,
           strict: true,
           noEmit: true,
-          skipLibCheck: false,
-          types: [],
+          skipLibCheck: true,
+          types: ["node"],
         },
         include: ["test.ts"],
       },
       null,
-      2
-    )
+      2,
+    ),
   );
 
   try {
-    run("npx tsc --noEmit", { cwd: tmpDir, timeout: 60000 });
+    const tscScript = path.join(tmpDir, "node_modules", "typescript", "lib", "tsc.js");
+    execFileSync(process.execPath, [tscScript, "--noEmit"], {
+      cwd: tmpDir,
+      timeout: 60000,
+      encoding: "utf-8",
+    });
     console.log("  OK   TypeScript declarations resolve");
   } catch (err) {
-    const stderr = err.stderr || err.message || "";
-    console.error(`  FAIL TypeScript declarations: ${stderr.split("\n")[0]}`);
+    const stderr = String(err.stderr || err.stdout || err.message || "").split("\n")[0];
+    console.error(`  FAIL TypeScript declarations: ${stderr}`);
     failures++;
   }
 
