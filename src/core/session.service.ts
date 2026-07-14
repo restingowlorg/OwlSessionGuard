@@ -626,12 +626,21 @@ export class SessionService implements ISessionService {
     } catch (error) {
       // WHY: Store errors (Redis down, connection timeout) are upstream failures — 502,
       // not 500. 500 implies the server is broken; 502 implies a dependency is broken.
-      const message = error instanceof Error ? error.message : String(error);
+      const errorId = uuidv4();
+      const errorClass = error instanceof Error ? error.name : "UnknownError";
+
+      this.emitEvent("internal_error", {
+        context: "listUserSessions",
+        errorClass,
+        category: "storage",
+        errorId,
+        timestamp: new Date(),
+      });
       return {
         success: false,
         error: {
           code: "STORAGE_ERROR",
-          message: `Failed to list sessions: ${message}`,
+          message: "Failed to list sessions",
         },
         httpCode: 502,
       };
@@ -868,37 +877,24 @@ export class SessionService implements ISessionService {
   }
 
   private handleError<T>(context: string, error: unknown): SessionOpResult<T> {
-    let message = "Unknown error";
-    if (error instanceof Error) {
-      message = error.message;
-    } else if (typeof error === "string") {
-      message = error;
-    }
+    const errorId = uuidv4();
+    const errorClass = error instanceof Error ? error.name : "UnknownError";
 
-    // WHY: Stage 3 & 6 — Telemetry Preservation.
-    // Emit a serializable representation of the raw error so that consumer applications
-    // can hook into 'internal_error' and log full stack traces using their own loggers in production.
     this.emitEvent("internal_error", {
       context,
-      message,
-      error:
-        error instanceof Error
-          ? {
-              name: error.name,
-              message: error.message,
-              stack: error.stack,
-            }
-          : String(error),
+      errorClass,
+      category: "storage",
+      errorId,
       timestamp: new Date(),
     });
 
-    console.error(`[OSSEC] INTERNAL_ERROR in ${context}:`, error);
+    console.error(`[OSSEC] INTERNAL_ERROR in ${context} (${errorId})`);
 
     return {
       success: false,
       error: {
         code: "INTERNAL_ERROR",
-        message: `${context}: ${message}`,
+        message: context,
       },
       httpCode: 500,
     };

@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from "uuid";
 import { SessionStoreAdapter } from "../storage/contracts";
 import {
   SessionStatus,
@@ -401,28 +402,22 @@ export class SelectiveRevocationEngine {
   }
 
   private handleError<T>(context: string, error: unknown): SessionOpResult<T> {
-    let message = "Unknown error";
-    if (error instanceof Error) {
-      message = error.message;
-    } else if (typeof error === "string") {
-      message = error;
-    }
+    const errorId = uuidv4();
+    const errorClass = error instanceof Error ? error.name : "UnknownError";
 
     this.emitEvent("internal_error", {
       context,
-      message,
-      error:
-        error instanceof Error
-          ? { name: error.name, message: error.message, stack: error.stack }
-          : String(error),
+      errorClass,
+      category: "storage",
+      errorId,
       timestamp: new Date(),
     });
 
-    console.error(`[OSSEC] INTERNAL_ERROR in ${context}:`, error);
+    console.error(`[OSSEC] INTERNAL_ERROR in ${context} (${errorId})`);
 
     return {
       success: false,
-      error: { code: "INTERNAL_ERROR", message: `${context}: ${message}` },
+      error: { code: "INTERNAL_ERROR", message: context },
       httpCode: 500,
     };
   }
