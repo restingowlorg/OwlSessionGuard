@@ -16,7 +16,7 @@ Hook management is implemented with Husky and follows conventional commit standa
 
 ```bash
 npm install
-npm run prepare
+npx --no-install husky
 chmod +x .husky/commit-msg .husky/pre-commit .husky/pre-push
 ```
 
@@ -30,9 +30,9 @@ type(scope): description
 
 Examples:
 
-- `feat(auth): add refresh token rotation`
-- `fix(db): prevent duplicate session insert`
-- `docs(common): update usage examples`
+- `feat(core): add selective revocation filter`
+- `fix(redis): prevent duplicate session insert`
+- `docs(session): update middleware usage examples`
 
 Allowed types:
 
@@ -40,7 +40,7 @@ Allowed types:
 
 Allowed scopes:
 
-- `api`, `ui`, `db`, `auth`, `core`, `infra`, `config`, `test`, `common`, `docs`
+- `api`, `middleware`, `storage`, `session`, `core`, `infra`, `config`, `test`, `common`, `docs`
 
 Rules:
 
@@ -140,7 +140,7 @@ npm run changeset  # create a changeset entry
 ### Hooks not running
 
 ```bash
-npm run prepare
+npx --no-install husky
 git config core.hooksPath
 ```
 

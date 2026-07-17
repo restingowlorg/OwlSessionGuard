@@ -11,7 +11,7 @@ Use this document during release windows.
 
 ## 0) Preconditions (must be true)
 
-- npm trusted publishing is enabled for `@restingowlorg/owl-session-guard`
+- npm trusted publishing is enabled for `@restingowlorg/owlsessionguard`
 - GitHub Actions has workflow permission `id-token: write`
 - Branch protections are enabled for `develop`, `staging`, and `main`
 - Required checks are green
@@ -70,7 +70,7 @@ When ready to prepare a release:
 ### 2.3 Verify prerelease tag
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
+npm view @restingowlorg/owlsessionguard dist-tags
 ```
 
 Expected:
@@ -83,8 +83,8 @@ Expected:
 ```bash
 mkdir -p /tmp/owlsessionguard-next-check && cd /tmp/owlsessionguard-next-check
 npm init -y
-npm i @restingowlorg/owl-session-guard@next
-node -e 'require("@restingowlorg/owl-session-guard"); require("@restingowlorg/owl-session-guard/storage"); require("@restingowlorg/owl-session-guard/storage/memory"); require("@restingowlorg/owl-session-guard/storage/redis"); console.log("next install OK")'
+npm i @restingowlorg/owlsessionguard@next
+node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("next install OK")'
 ```
 
 ## 3) Validation Phase
@@ -113,7 +113,7 @@ npx changeset
 Without a new changeset Changesets has no pending work and will skip publishing when the workflow runs again. 3. Open PR: `feature-branch` → `develop` and merge after checks pass 4. Open PR: `develop` → `staging` and merge after checks pass 5. Trigger prerelease workflow again (Actions → Release → Run workflow → branch: staging → release_mode: prerelease) 6. Verify the new prerelease tag:
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
+npm view @restingowlorg/owlsessionguard dist-tags
 ```
 
 7. Retest from the beginning of the validation phase
@@ -158,7 +158,7 @@ Once `next` is validated:
 ### 4.3 Verify stable tag
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
+npm view @restingowlorg/owlsessionguard dist-tags
 ```
 
 Expected:
@@ -170,7 +170,7 @@ Expected:
 ### 4.4 Clean up stale next tag
 
 ```bash
-npm dist-tag rm @restingowlorg/owl-session-guard next
+npm dist-tag rm @restingowlorg/owlsessionguard next
 ```
 
 - `latest` points to stable version
@@ -183,8 +183,8 @@ npm dist-tag rm @restingowlorg/owl-session-guard next
 ```bash
 mkdir -p /tmp/owlsessionguard-latest-check && cd /tmp/owlsessionguard-latest-check
 npm init -y
-npm i @restingowlorg/owl-session-guard@latest
-node -e 'require("@restingowlorg/owl-session-guard"); require("@restingowlorg/owl-session-guard/storage"); require("@restingowlorg/owl-session-guard/storage/memory"); require("@restingowlorg/owl-session-guard/storage/redis"); console.log("latest install OK")'
+npm i @restingowlorg/owlsessionguard@latest
+node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("latest install OK")'
 ```
 
 ### 5.2 Review release artifacts

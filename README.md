@@ -1,213 +1,247 @@
-# owl-session-guard
+# OwlSessionGuard
 
 <p align="center">
-  <img src="docs/assets/restingowl-logo.png" alt="owl-session-guard logo" width="320" />
+  <img src="https://raw.githubusercontent.com/restingowlorg/OwlSessionGuard/main/docs/assets/restingowl-logo.png" alt="OwlSessionGuard logo" width="320" />
 </p>
 
 ---
 
-[![npm package](https://img.shields.io/badge/npm-%40restingowlorg%2Fowl--session--guard-CB3837?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@restingowlorg/owl-session-guard) [![Node.js](<https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white>)](https://www.npmjs.com/package/@restingowlorg/owl-session-guard) [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![npm package](https://img.shields.io/badge/npm-%40restingowlorg%2Fowlsessionguard-CB3837?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@restingowlorg/owlsessionguard) [![Node.js](https://img.shields.io/badge/node-%3E%3D18-339933?style=flat-square&logo=node.js&logoColor=white)](https://www.npmjs.com/package/@restingowlorg/owlsessionguard) [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Open-source OWASP-aligned session management and security middleware for Node.js.
 
-owl-session-guard, published as `@restingowlorg/owl-session-guard`, gives your Node.js app secure session state, automatic token rotation, concurrent reuse detection, and framework adapters. It provides robust session handling, security binding, and works out of the box with memory and Redis stores.
+OwlSessionGuard, published as `@restingowlorg/owlsessionguard`, gives your backend a focused session-management surface: high-entropy session tokens, hash-only token storage, automatic rotation, reuse detection, device and IP binding, CSRF token binding, selective revocation, concurrent session limits, and framework adapters for Express, Fastify, and NestJS.
 
-- **Package:** `@restingowlorg/owl-session-guard`
+- **Package:** `@restingowlorg/owlsessionguard`
 - **Latest stable tag:** `latest`
 - **Prerelease tag:** `next`
-- **Install:** `npm install @restingowlorg/owl-session-guard`
+- **Install:** `npm install @restingowlorg/owlsessionguard`
 - **Developer guide:** [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
+- **Security policy:** [SECURITY.md](SECURITY.md)
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## What You Get
 
-- **Framework Agnostic**: Native middleware for Express, Fastify, and NestJS, or roll your own.
-- **Database Agnostic**: Pluggable storage adapters (Memory, Redis) with atomic lock synchronization.
-- **Secure Token Sessions**: Uses CSPRNG-generated tokens (256-bit entropy) and strictly hashes tokens at rest.
-- **Automatic Reuse Detection (ARD)**: Tree-based cascading revocation automatically destroys session lines if a hijacked rotated token is reused.
-- **Security Binding**: Context-aware evaluations enforcing strict or soft IP and fingerprint binding.
-- **Lifecycle Management**: Built-in state machine guarding valid transitions (active, rotated, revoked).
-- **Idle & Absolute Expiration**: Support for sliding (rolling) idle timeouts and hard absolute limits.
-- **Concurrent Session Limits**: Configurable max-active sessions per user, evaluated globally and per-role.
-- **CSRF Protection**: Native cryptographic signed-token generation and validation tied explicitly to the session ID.
+- **Secure session lifecycle:** Create, validate, rotate, revoke, revoke-all, and list user sessions through one typed service.
+- **Hash-only token storage:** Raw session tokens are returned once to the caller and are never persisted by the built-in stores.
+- **Automatic reuse detection:** Reuse of a rotated token can revoke the affected session tree.
+- **Idle and absolute expiration:** Support rolling idle timeouts and hard absolute session lifetime limits.
+- **Security binding:** Optional IP and device fingerprint checks with soft or hard enforcement modes.
+- **CSRF protection:** HMAC-signed CSRF tokens bound to the server-side session ID.
+- **Concurrent session limits:** Enforce global per-user caps and role-specific caps.
+- **Storage adapters:** In-memory storage for local/test use and Redis storage for production deployments.
+- **Framework middleware:** Express, Fastify, and NestJS integrations attach typed session context to requests.
+- **Typed, predictable results:** Public service methods return a consistent `SessionOpResult<T>` envelope.
 
 ## Support Matrix
 
-| Area          | Current Support          |
-| ------------- | ------------------------ |
-| Runtime       | Node.js 18+              |
-| Language      | TypeScript, JavaScript   |
-| Module output | CommonJS                 |
-| Frameworks    | Express, Fastify, NestJS |
-| Storage       | In-Memory, Redis         |
+| Area          | Current Support                        |
+| ------------- | -------------------------------------- |
+| Runtime       | Node.js 18+                            |
+| Language      | TypeScript, JavaScript                 |
+| Module output | CommonJS                               |
+| Frameworks    | Express, Fastify, NestJS               |
+| Storage       | In-memory, Redis                       |
+| Core flows    | Create, Validate, Rotate, Revoke, List |
 
 ## Installation
 
 ```bash
-npm install @restingowlorg/owl-session-guard
+npm install @restingowlorg/owlsessionguard
 ```
 
-## Core Usage
+Install only the framework peer dependencies you use:
 
-### Initialization
+```bash
+npm install express
+npm install fastify
+npm install @nestjs/common @nestjs/core rxjs
+```
 
-```typescript
-import { SessionService } from "@restingowlorg/owl-session-guard";
-import { MemoryStoreAdapter } from "@restingowlorg/owl-session-guard/storage/memory";
+## Quick Start
+
+```ts
+import {
+  SessionLibraryConfig,
+  SessionReasonCode,
+  SessionService,
+} from "@restingowlorg/owlsessionguard";
+import { MemoryStoreAdapter } from "@restingowlorg/owlsessionguard/storage/memory";
 
 const store = new MemoryStoreAdapter();
-const config = {
+
+const config: SessionLibraryConfig = {
   env: "production",
+  transport: {
+    mode: "cookie",
+    cookie: {
+      name: "__Host-session",
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    },
+  },
   expiration: {
-    idleTimeoutSeconds: 3600,
-    absoluteTimeoutSeconds: 86400,
+    idleTimeoutSeconds: 60 * 60,
+    absoluteTimeoutSeconds: 60 * 60 * 24,
     rolling: true,
   },
+  rotation: {
+    gracePeriodSeconds: 5,
+  },
   security: {
-    ipBinding: "hard",
+    enforceTlsInProduction: true,
+    ipBinding: "soft",
+    fingerprinting: "hard",
     csrf: {
       enabled: true,
-      secret: "super-secret-key-at-least-32-chars",
-    }
+      secret: process.env.SESSION_CSRF_SECRET!,
+      cookieName: "x-csrf-token",
+      headerName: "x-csrf-token",
+    },
+  },
+  device: {
+    enabled: true,
+    cookie: {
+      name: "__Host-device",
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+    },
   },
   limits: {
     maxSessionsPerUser: 5,
+    maxSessionsPerRole: {
+      admin: 2,
+    },
   },
-  observability: { emitEvents: true }
+  store: {
+    provider: "memory",
+  },
+  observability: {
+    debug: false,
+    emitEvents: true,
+    metrics: true,
+  },
 };
 
-const sessionService = new SessionService(store, config);
-```
+const sessions = new SessionService(store, config);
 
-### Create Session
-
-```typescript
-const result = await sessionService.createSession({
-  userId: "user_uuid_123",
+const created = await sessions.createSession({
+  userId: "user_123",
   roles: ["admin"],
   scopes: ["read", "write"],
   metadata: {
-    ipAddress: "192.168.1.1",
-    userAgent: "Mozilla/5.0...",
+    ipAddress: "203.0.113.10",
+    userAgent: "Mozilla/5.0",
+    deviceId: "device-cookie-value",
   },
 });
 
-if (result.success) {
-  const { token, record } = result.data;
-  // Send token to client (e.g., via HttpOnly Secure Cookie)
+if (!created.success) {
+  throw new Error(created.error.message);
 }
-```
 
-### Validate Session
+const { token, record } = created.data;
 
-```typescript
-const result = await sessionService.validateSession({
-  token: requestToken,
-  csrfToken: requestCsrfToken, // If CSRF enabled
+const validated = await sessions.validateSession({
+  token,
+  csrfToken: created.newCsrfToken,
   context: {
-    ipAddress: requestIp,
-    method: "POST", // Method drives CSRF normalization
+    ipAddress: "203.0.113.10",
+    userAgent: "Mozilla/5.0",
+    deviceFingerprint: record.metadata.deviceFingerprint,
+    method: "POST",
   },
 });
 
-if (result.success) {
-  const session = result.data;
+if (validated.success) {
+  console.log(validated.data.userId);
 }
-```
 
-### Rotate Session
-
-```typescript
-const result = await sessionService.rotateSession({
-  token: oldToken,
-  context: {
-    ipAddress: requestIp,
-  },
+await sessions.revokeSession({
+  sessionId: record.id,
+  reason: SessionReasonCode.MANUAL_LOGOUT,
 });
 ```
 
-### Revoke Session
+> **Production note:** Use `MemoryStoreAdapter` only for local development, tests, or single-process demos. Production deployments should use `RedisStoreAdapter` or a custom `SessionStoreAdapter` backed by durable infrastructure.
 
-```typescript
-await sessionService.revokeSession({ sessionId: "session_id_here", reason: "USER_LOGOUT" });
+## Storage
+
+### Memory
+
+```ts
+import { MemoryStoreAdapter } from "@restingowlorg/owlsessionguard/storage/memory";
+
+const store = new MemoryStoreAdapter();
 ```
 
-### Revoke All Sessions for User
+### Redis
 
-```typescript
-await sessionService.revokeAllSessionsForUser("user_uuid_123", "SECURITY_BREACH");
-```
+```ts
+import Redis from "ioredis";
+import { RedisStoreAdapter } from "@restingowlorg/owlsessionguard/storage/redis";
 
-### List User Sessions
-
-```typescript
-const sessionsResult = await sessionService.listUserSessions("user_uuid_123", { limit: 10 });
-```
-
-### Selective Revocation
-
-```typescript
-// Use the selective revocation engine for targeted session killing
-await sessionService.selectiveRevocation.revokeByQuery("user_uuid_123", {
-  reason: "SECURITY_BREACH",
-  deviceFingerprint: "fp_xyz",
+const redis = new Redis(process.env.REDIS_URL!);
+const store = new RedisStoreAdapter(redis, {
+  keyPrefix: "ossec:",
+  ttlBufferSeconds: 60,
 });
 ```
 
-## Configuration Options
+The default Redis key prefix is `ossec:` for backward compatibility with existing deployments. Set `keyPrefix` for new deployments if your Redis namespace requires a different prefix.
 
-| Option | Type | Purpose |
-| ------ | ---- | ------- |
-| `env` | `"development" \| "production"` | Disables strict checks (like secure cookies) in development. |
-| `expiration.idleTimeoutSeconds` | `number` | Maximum time a session can remain inactive before expiring. |
-| `expiration.absoluteTimeoutSeconds` | `number` | Hard limit on session lifetime, regardless of activity. |
-| `expiration.rolling` | `boolean` | If true, idle expiration is reset on every validation. |
-| `security.ipBinding` | `"none" \| "soft" \| "hard"` | Enforces IP pinning. `hard` rejects mismatches, `soft` just warns. |
-| `security.csrf.enabled` | `boolean` | Enables the built-in signed CSRF token architecture. |
-| `limits.maxSessionsPerUser` | `number` | Global cap on active concurrent sessions per user. |
-| `observability.emitEvents` | `boolean` | Enables structured telemetry via event listeners. |
-
-## Middleware Examples
+## Framework Integration
 
 ### Express
 
-Peer dependencies: `express`
+Peer dependency: `express`
 
-```typescript
-import { createExpressMiddleware, requireSession } from "@restingowlorg/owl-session-guard/express";
+```ts
 import express from "express";
+import {
+  createExpressMiddleware,
+  requireSession,
+} from "@restingowlorg/owlsessionguard/express";
 
 const app = express();
 
-// Global middleware
-app.use(createExpressMiddleware(sessionService, {
-  cookieName: "session_token",
-  csrfHeaderName: "x-csrf-token",
-}));
+app.use(createExpressMiddleware(sessions, config));
 
-// Protected route
-app.get("/protected", requireSession(), (req, res) => {
-  res.json({ session: req.session });
+app.get("/me", requireSession(), (req, res) => {
+  res.json({
+    userId: req.session?.userId,
+    roles: req.session?.roles,
+  });
 });
 ```
 
 ### Fastify
 
-Peer dependencies: `fastify`
+Peer dependency: `fastify`
 
-```typescript
-import { fastifySessionPlugin, fastifyRequireSession } from "@restingowlorg/owl-session-guard/fastify";
-import fastify from "fastify";
+```ts
+import Fastify from "fastify";
+import {
+  fastifyRequireSession,
+  fastifySessionPlugin,
+} from "@restingowlorg/owlsessionguard/fastify";
 
-const app = fastify();
+const app = Fastify();
 
-app.register(fastifySessionPlugin, {
-  sessionService,
-  cookieName: "session_token",
-  csrfHeaderName: "x-csrf-token",
+await app.register(fastifySessionPlugin, {
+  service: sessions,
+  config,
 });
 
-app.get("/protected", { preHandler: [fastifyRequireSession()] }, async (request, reply) => {
-  return { session: request.session };
+app.get("/me", { preHandler: fastifyRequireSession() }, async (request) => {
+  return {
+    userId: request.session?.userId,
+    roles: request.session?.roles,
+  };
 });
 ```
 
@@ -215,64 +249,159 @@ app.get("/protected", { preHandler: [fastifyRequireSession()] }, async (request,
 
 Peer dependencies: `@nestjs/common`, `@nestjs/core`, `rxjs`
 
-```typescript
-import { SessionGuard, RequireRoles } from "@restingowlorg/owl-session-guard/nestjs";
+```ts
 import { Controller, Get, UseGuards } from "@nestjs/common";
+import {
+  RequireRoles,
+  Session,
+  SessionGuard,
+} from "@restingowlorg/owlsessionguard/nestjs";
+import type { SessionRecord } from "@restingowlorg/owlsessionguard";
 
-@Controller("protected")
+@Controller("admin")
 @UseGuards(SessionGuard)
-export class ProtectedController {
-  @Get()
+export class AdminController {
+  @Get("me")
   @RequireRoles("admin")
-  getProtectedData() {
-    return { message: "Hello Admin" };
+  getCurrentSession(@Session() session: SessionRecord | undefined) {
+    return {
+      userId: session?.userId,
+      roles: session?.roles,
+    };
   }
 }
 ```
 
-## Role-Limit Semantics
+## Configuration Options
 
-- **Exact Matching**: Session limits evaluate exactly matched roles.
-- **Multiple Roles**: If a user is assigned multiple roles, limits are verified against each distinct role configuration.
-- **Global Caps**: A global `maxSessionsPerUser` cap operates as a fallback or ceiling limit regardless of role specifics.
-- **Privilege-Change Rotation**: Sessions must be rotated explicitly whenever user privileges (roles or scopes) change to re-evaluate limits and security policies.
+| Option                              | Type                                      | Purpose                                                                                                                                            |
+| ----------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `env`                               | `"development" \| "test" \| "production"` | Drives production-only security validation.                                                                                                        |
+| `transport.mode`                    | `"cookie" \| "header" \| "hybrid"`        | Selects how session tokens are read and written by middleware.                                                                                     |
+| `transport.cookie`                  | `object`                                  | Configures session cookie name, `HttpOnly`, `Secure`, `SameSite`, path, domain, and max age.                                                       |
+| `transport.header`                  | `object`                                  | Configures request header name, optional scheme, and response header for rotated tokens.                                                           |
+| `expiration.idleTimeoutSeconds`     | `number`                                  | Maximum inactivity period before a session expires.                                                                                                |
+| `expiration.absoluteTimeoutSeconds` | `number`                                  | Hard maximum lifetime regardless of activity.                                                                                                      |
+| `expiration.rolling`                | `boolean`                                 | Extends idle expiration on successful validation.                                                                                                  |
+| `rotation.gracePeriodSeconds`       | `number`                                  | Short retry window for in-flight requests after rotation. Maximum accepted value is 30 seconds.                                                    |
+| `security.ipBinding`                | `"off" \| "soft" \| "hard"`               | Compares request IP address to the stored session IP.                                                                                              |
+| `security.fingerprinting`           | `"off" \| "soft" \| "hard"`               | Compares request device fingerprint to the stored session fingerprint.                                                                             |
+| `security.csrf`                     | `object`                                  | Enables or disables HMAC-signed CSRF tokens bound to the session ID.                                                                               |
+| `device.enabled`                    | `boolean`                                 | Enables persistent device-cookie extraction for fingerprint checks.                                                                                |
+| `limits.maxSessionsPerUser`         | `number`                                  | Maximum active sessions per user.                                                                                                                  |
+| `limits.maxSessionsPerRole`         | `Record<string, number>`                  | Optional role-specific active-session limits.                                                                                                      |
+| `store.provider`                    | `"memory" \| "redis" \| "custom"`         | Declares the configured storage backend. MongoDB and PostgreSQL are reserved config values; built-in adapters currently ship for memory and Redis. |
+| `observability.emitEvents`          | `boolean`                                 | Enables structured event listener dispatch.                                                                                                        |
 
-## CSRF Protection
+## Session Operations
 
-When CSRF protection is enabled, the library uses a **Signed-Token** architecture. The CSRF token is cryptographically bound to the session ID via HMAC and validated.
-**Method Normalization**: Safe HTTP methods (`GET`, `HEAD`, `OPTIONS`) bypass CSRF checks, while mutating methods (`POST`, `PUT`, `DELETE`, `PATCH`) are normalized and strictly require the correct CSRF token to pass the validation gate.
+### Rotate a Session
+
+```ts
+const rotated = await sessions.rotateSession({
+  token,
+  context: {
+    ipAddress: "203.0.113.10",
+    userAgent: "Mozilla/5.0",
+    deviceFingerprint: record.metadata.deviceFingerprint,
+    method: "POST",
+  },
+  reason: SessionReasonCode.ROTATION,
+  roles: ["admin"],
+});
+
+if (rotated.success) {
+  const nextToken = rotated.data.newToken;
+}
+```
+
+### Revoke All Sessions for a User
+
+```ts
+await sessions.revokeAllSessionsForUser(
+  "user_123",
+  SessionReasonCode.USER_ALL_SESSIONS_REVOKED,
+);
+```
+
+### List User Sessions
+
+```ts
+const listed = await sessions.listUserSessions("user_123", {
+  limit: 20,
+  role: "admin",
+});
+
+if (listed.success) {
+  console.log(listed.data.sessions);
+}
+```
+
+### Selective Revocation
+
+```ts
+await sessions.selectiveRevocation.revokeByRole({
+  userId: "user_123",
+  role: "admin",
+  reason: SessionReasonCode.ROLE_DEPRECATED,
+});
+```
+
+## Response Model
+
+Every public service method returns a discriminated result:
+
+```ts
+type SessionOpResult<T> =
+  | {
+      success: true;
+      data: T;
+      httpCode: number;
+      newToken?: string;
+      newCsrfToken?: string;
+      clearCsrfToken?: boolean;
+    }
+  | {
+      success: false;
+      error: {
+        code: string;
+        message: string;
+        reason?: SessionReasonCode;
+      };
+      httpCode: number;
+      clearCsrfToken?: boolean;
+    };
+```
 
 ## OWASP Alignment
 
-Here's exactly what owl-session-guard does, and where each decision comes from. Every control is traced back to the [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+OwlSessionGuard is not an OWASP certification and does not make an application compliant by itself. It implements session controls that map to OWASP guidance:
 
-| Control | What the library does | OWASP reference |
-| ------- | --------------------- | --------------- |
-| CSPRNG Tokens | 256-bit base64url encoded tokens from Node's crypto RNG. | [Session ID Entropy](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#session-id-entropy) |
-| Hash-only Storage | Only token hashes are stored in the database. Raw tokens are never persisted. | [Protect Session IDs](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#protect-session-ids) |
-| Automatic Reuse Detection | If a rotated session token is reused, the entire session tree is instantly revoked. | [Detect Session Hijacking](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#detect-session-hijacking) |
-| Token Rotation | Transparent rotation APIs for privilege boundary crossing. | [Rotate Session ID](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#renew-the-session-id-after-any-privilege-level-change) |
-| CSRF Token Binding | HMAC signed tokens bound to the specific session ID. | [CSRF Synchronizer Token](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#synchronizer-token-pattern) |
+| Control             | What the library does                                                                                                   | OWASP reference                                                                                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Session ID entropy  | Generates 256-bit base64url session tokens with Node.js cryptographic randomness.                                       | [Session ID Entropy](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#session-id-entropy)                                  |
+| Protect session IDs | Stores token hashes only. Raw tokens are returned to the caller and should be transported in secure cookies or headers. | [Protect Session IDs](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#protect-session-ids)                                |
+| Renew session ID    | Provides explicit rotation APIs for privilege changes and sensitive transitions.                                        | [Renew Session ID](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#renew-the-session-id-after-any-privilege-level-change) |
+| Reuse detection     | Detects reuse of rotated tokens and can revoke the affected session tree.                                               | [Detect Session ID Anomalies](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)                                            |
+| CSRF tokens         | Uses HMAC-signed CSRF tokens bound to the session ID for mutating methods.                                              | [CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)                                     |
 
 ## Security Notes
 
-The table above covers what this library actually does. It's **not** an OWASP certification, and it won't make your app ASVS-compliant on its own. You still need to handle:
+The calling application remains responsible for:
 
-- TLS and secure transport (cookies must be Secure and HttpOnly)
-- Proper user authentication before session creation
-- Cross-Site Scripting (XSS) defenses
-- Route-level authorization and role enforcement
+- Serving all authenticated traffic over HTTPS.
+- Authenticating the user before calling `createSession`.
+- Setting secure cookie attributes appropriate for the deployment.
+- Implementing route-level and resource-level authorization.
+- Protecting login, refresh, and session endpoints with rate limits.
+- Preventing XSS, since XSS can bypass many browser-side session protections.
+- Monitoring emitted events when `observability.emitEvents` is enabled.
 
-## Known Caller Responsibilities
+## Package Boundary
 
-The `SessionService` handles session state, concurrency, and validation, but the calling application MUST provide:
+OwlSessionGuard owns server-side session state: session records, storage adapters, idle and absolute expiration, token rotation, revocation, reuse detection, security binding, and middleware session attachment.
 
-1. **TLS**: Ensure all traffic is sent over HTTPS.
-2. **Authentication**: Verify user credentials before calling `createSession`.
-3. **Authorization**: Implement route-level and resource-level access control beyond basic session active status.
-4. **Rate Limiting**: Protect endpoints from brute-force or DoS attacks.
-5. **Deployment Hardening**: Secure cookies (`HttpOnly`, `Secure`, `SameSite`) and properly sanitize inputs.
-6. **Monitoring**: Ingest emitted telemetry events (`observability.emitEvents`) to detect anomalies.
+Token signing, JWT verification, and access-token issuance belong in a token-management layer such as OwlTokenGuard or in your application. User authentication belongs in an authentication layer such as owlauth or in your application.
 
 ## Community
 

@@ -570,7 +570,7 @@ describe("BridgeProcessor", () => {
 
     expect(result).toBe(true);
     expect(consoleSpy).toHaveBeenCalledWith(
-      "[OSSEC] getDeviceId() threw:",
+      "[OWL SESSION GUARD] getDeviceId() threw:",
       expect.any(Error),
     );
     expect(validateFn).toHaveBeenCalledWith("token", {
@@ -741,7 +741,7 @@ describe("BridgeProcessor - Device Cookie Helpers", () => {
             cookie: { sameSite: "none", secure: false },
           },
         }),
-    ).toThrow("[OSSEC] Device cookie: SameSite=None requires Secure=true.");
+    ).toThrow("[OWL SESSION GUARD] Device cookie: SameSite=None requires Secure=true.");
   });
 
   it("should not throw when device cookie has SameSite=None and Secure=true", () => {

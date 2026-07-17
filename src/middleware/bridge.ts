@@ -10,7 +10,7 @@ import { buildValidateFn } from "./validate-fn";
 export { buildValidateFn };
 
 /** Internal symbol to prevent session spoofing via other middlewares. */
-const OSSEC_SESSION_MARKER = Symbol("ossec:session:trusted");
+const OWL_SESSION_GUARD_MARKER = Symbol("owlsessionguard:session:trusted");
 
 export interface CookieOptions {
   httpOnly: boolean;
@@ -30,10 +30,10 @@ export interface SessionWebContext {
   clearCookie(name: string, options: CookieOptions): void;
   getClientInfo(): { ipAddress: string; userAgent?: string };
   setSession(
-    session: SessionRecord & { [OSSEC_SESSION_MARKER]?: boolean },
+    session: SessionRecord & { [OWL_SESSION_GUARD_MARKER]?: boolean },
   ): void;
   getSession():
-    | (SessionRecord & { [OSSEC_SESSION_MARKER]?: boolean })
+    | (SessionRecord & { [OWL_SESSION_GUARD_MARKER]?: boolean })
     | undefined;
   getDeviceId?(): string | undefined;
 }
@@ -85,7 +85,9 @@ export class BridgeProcessor {
     };
 
     if (this.cookieOptions.sameSite === "none" && !this.cookieOptions.secure) {
-      throw new Error("[OSSEC] SameSite=None requires Secure=true.");
+      throw new Error(
+        "[OWL SESSION GUARD] SameSite=None requires Secure=true.",
+      );
     }
 
     // WHY: Device cookie inherits secure defaults from session cookie config
@@ -113,7 +115,7 @@ export class BridgeProcessor {
       !this.deviceConfig.cookieOptions.secure
     ) {
       throw new Error(
-        "[OSSEC] Device cookie: SameSite=None requires Secure=true.",
+        "[OWL SESSION GUARD] Device cookie: SameSite=None requires Secure=true.",
       );
     }
   }
@@ -127,7 +129,7 @@ export class BridgeProcessor {
     validateFn: ValidateFunction,
   ): Promise<boolean> {
     const existing = context.getSession();
-    if (existing && existing[OSSEC_SESSION_MARKER]) return true;
+    if (existing && existing[OWL_SESSION_GUARD_MARKER]) return true;
 
     const extraction = this.extractToken(context);
     if (!extraction) return false;
@@ -147,7 +149,7 @@ export class BridgeProcessor {
         // NOTE: In hard fingerprinting mode, a missing deviceFingerprint
         // is evaluated as "" and fails against a persistent stored fingerprint,
         // so the session will be rejected — not silently bypassed.
-        console.error("[OSSEC] getDeviceId() threw:", error);
+        console.error("[OWL SESSION GUARD] getDeviceId() threw:", error);
       }
     }
 
@@ -209,7 +211,7 @@ export class BridgeProcessor {
     }
 
     const record = result.data as SessionRecord & {
-      [OSSEC_SESSION_MARKER]?: boolean;
+      [OWL_SESSION_GUARD_MARKER]?: boolean;
     };
 
     // WHY: Revoked sessions must not proceed as authenticated.
@@ -220,7 +222,7 @@ export class BridgeProcessor {
       return false;
     }
 
-    record[OSSEC_SESSION_MARKER] = true;
+    record[OWL_SESSION_GUARD_MARKER] = true;
     context.setSession(record);
 
     if (result.newToken) {

@@ -95,7 +95,7 @@ jobs:
           cd "$TMP_DIR"
           npm init -y >/dev/null 2>&1
           npm install "$GITHUB_WORKSPACE/$PACK_FILE"
-          node -e 'require("@restingowlorg/owl-session-guard"); require("@restingowlorg/owl-session-guard/storage"); require("@restingowlorg/owl-session-guard/storage/memory"); require("@restingowlorg/owl-session-guard/storage/redis"); console.log("artifact smoke test passed")'
+          node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("artifact smoke test passed")'
       - name: Enter prerelease mode and version packages
         if: steps.mode.outputs.mode == 'prerelease'
         run: |

@@ -106,8 +106,8 @@ Expected outcome:
 Verify with:
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
-npm view @restingowlorg/owl-session-guard versions --json
+npm view @restingowlorg/owlsessionguard dist-tags
+npm view @restingowlorg/owlsessionguard versions --json
 ```
 
 Expected result:
@@ -125,11 +125,11 @@ Minimum validation:
 mkdir -p /tmp/owlsessionguard-next-check
 cd /tmp/owlsessionguard-next-check
 npm init -y
-npm i @restingowlorg/owl-session-guard@next
-node -e 'require("@restingowlorg/owl-session-guard"); require("@restingowlorg/owl-session-guard/storage"); require("@restingowlorg/owl-session-guard/storage/memory"); require("@restingowlorg/owl-session-guard/storage/redis"); console.log("next install OK")'
+npm i @restingowlorg/owlsessionguard@next
+node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("next install OK")'
 ```
 
-For source or behavior changes, also validate the affected auth flows in your staging environment.
+For source or behavior changes, also validate the affected session flows in your staging environment.
 
 ### Step 5: Promote staging to main
 
@@ -166,8 +166,8 @@ This is the step that actually publishes the stable version to npm `latest`.
 After the Release workflow on `main` completes, verify:
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
-npm view @restingowlorg/owl-session-guard version
+npm view @restingowlorg/owlsessionguard dist-tags
+npm view @restingowlorg/owlsessionguard version
 ```
 
 Expected result:
@@ -180,8 +180,8 @@ Then run a clean install test:
 mkdir -p /tmp/owlsessionguard-latest-check
 cd /tmp/owlsessionguard-latest-check
 npm init -y
-npm i @restingowlorg/owl-session-guard@latest
-node -e 'require("@restingowlorg/owl-session-guard"); require("@restingowlorg/owl-session-guard/storage"); require("@restingowlorg/owl-session-guard/storage/memory"); require("@restingowlorg/owl-session-guard/storage/redis"); console.log("latest install OK")'
+npm i @restingowlorg/owlsessionguard@latest
+node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("latest install OK")'
 ```
 
 ## Required Sync Step After Stable Release
@@ -306,8 +306,8 @@ Wait for `changeset-release/main` -> `main`, review it, and merge it.
 Run:
 
 ```bash
-npm view @restingowlorg/owl-session-guard dist-tags
-npm view @restingowlorg/owl-session-guard version
+npm view @restingowlorg/owlsessionguard dist-tags
+npm view @restingowlorg/owlsessionguard version
 ```
 
 Expected outcome:

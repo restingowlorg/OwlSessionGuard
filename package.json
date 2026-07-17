@@ -1,7 +1,7 @@
 {
-  "name": "@restingowlorg/owl-session-guard",
+  "name": "@restingowlorg/owlsessionguard",
   "version": "1.0.0",
-  "description": "A framework-agnostic, database-agnostic session management library for Node.js",
+  "description": "OwlSessionGuard: OWASP-aligned session management, rotation, revocation, and framework middleware for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -88,7 +88,13 @@
     "backend",
     "nodejs"
   ],
-  "author": "restingowl",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "Resting Owl",
+    "url": "https://github.com/restingowlorg"
+  },
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -155,10 +161,14 @@
     }
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/restingowlorg/OwlSessionGuard.git"
-  }
+    "url": "git+https://github.com/restingowlorg/OwlSessionGuard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/restingowlorg/OwlSessionGuard/issues"
+  },
+  "homepage": "https://github.com/restingowlorg/OwlSessionGuard#readme"
 }
