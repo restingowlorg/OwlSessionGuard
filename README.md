@@ -187,12 +187,12 @@ import { RedisStoreAdapter } from "@restingowlorg/owlsessionguard/storage/redis"
 
 const redis = new Redis(process.env.REDIS_URL!);
 const store = new RedisStoreAdapter(redis, {
-  keyPrefix: "ossec:",
+  keyPrefix: "owlsessionguard:",
   ttlBufferSeconds: 60,
 });
 ```
 
-The default Redis key prefix is `ossec:` for backward compatibility with existing deployments. Set `keyPrefix` for new deployments if your Redis namespace requires a different prefix.
+The default Redis key prefix is `owlsessionguard:`. Set `keyPrefix` if your Redis namespace requires a different prefix.
 
 ## Framework Integration
 
