@@ -1,7 +1,7 @@
 # OwlSessionGuard
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/restingowlorg/OwlSessionGuard/main/docs/assets/restingowl-logo.png" alt="OwlSessionGuard logo" width="320" />
+  <img src="docs/assets/restingowl-logo.png" alt="OwlSessionGuard logo" width="320" />
 </p>
 
 ---
