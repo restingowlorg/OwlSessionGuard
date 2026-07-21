@@ -246,28 +246,33 @@ describe("Consumer: Package metadata", () => {
   const pkg = require("../package.json");
 
   test("should publish under the intended public session package identity", () => {
-    expect(pkg.name).toBe("@restingowlorg/owl-session-guard");
+    expect(pkg.name).toBe("@restingowlorg/owlsessionguard");
     expect(pkg.description).toContain("session management");
-    expect(pkg.author).toBe("restingowl");
+    expect(pkg.author).toEqual({
+      name: "Resting Owl",
+      url: "https://github.com/restingowlorg",
+    });
     expect(pkg.license).toBe("MIT");
-    // expect(pkg.publishConfig?.access).toBe("public");
+    expect(pkg.publishConfig?.access).toBe("public");
     expect(pkg.repository?.url).toBe(
-      "https://github.com/restingowlorg/OwlSessionGuard.git",
+      "git+https://github.com/restingowlorg/OwlSessionGuard.git",
     );
   });
 });
 
 describe("Consumer: ESM import boundary", () => {
   const PKG_ROOT = path.resolve(__dirname, "..");
+  const pkg = require("../package.json");
+  const packageName = pkg.name;
 
   const esmSubpaths = [
-    { subpath: ".", specifier: "@restingowlorg/owl-session" },
-    { subpath: "./storage", specifier: "@restingowlorg/owl-session/storage" },
-    { subpath: "./storage/memory", specifier: "@restingowlorg/owl-session/storage/memory" },
-    { subpath: "./storage/redis", specifier: "@restingowlorg/owl-session/storage/redis" },
-    { subpath: "./express", specifier: "@restingowlorg/owl-session/express" },
-    { subpath: "./fastify", specifier: "@restingowlorg/owl-session/fastify" },
-    { subpath: "./nestjs", specifier: "@restingowlorg/owl-session/nestjs" },
+    { subpath: ".", specifier: packageName },
+    { subpath: "./storage", specifier: `${packageName}/storage` },
+    { subpath: "./storage/memory", specifier: `${packageName}/storage/memory` },
+    { subpath: "./storage/redis", specifier: `${packageName}/storage/redis` },
+    { subpath: "./express", specifier: `${packageName}/express` },
+    { subpath: "./fastify", specifier: `${packageName}/fastify` },
+    { subpath: "./nestjs", specifier: `${packageName}/nestjs` },
   ];
 
   test.each(esmSubpaths)(

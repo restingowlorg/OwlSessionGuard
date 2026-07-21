@@ -57,4 +57,4 @@ export function hmacSign(data: string, secret: string): string {
 // WHY: Purpose prefix ensures domain separation — if hmacSign is reused for
 // another purpose, the same session ID + secret produces a different HMAC.
 // Internal constant, not consumer-configurable (changing it invalidates all tokens).
-export const CSRF_SIGNING_PREFIX = "ossec-session:csrf:v1:" as const;
+export const CSRF_SIGNING_PREFIX = "owlsessionguard:csrf:v1:" as const;

@@ -79,7 +79,7 @@ export class SessionService implements ISessionService {
     // throws. Detect at registration time to warn developers.
     if (listener.constructor.name === "AsyncFunction") {
       console.warn(
-        `[OSSEC] Event listener for '${event}' is async. ` +
+        `[OWL SESSION GUARD] Event listener for '${event}' is async. ` +
           `Synchronous listeners only — async rejections will be unhandled. ` +
           `Wrap async logic in setImmediate().`,
       );
@@ -785,7 +785,7 @@ export class SessionService implements ISessionService {
             listener(safePayload);
           } catch (listenerError) {
             console.error(
-              `[OSSEC] Telemetry listener threw on event '${event}':`,
+              `[OWL SESSION GUARD] Telemetry listener threw on event '${event}':`,
               listenerError,
             );
           }
@@ -888,7 +888,9 @@ export class SessionService implements ISessionService {
       timestamp: new Date(),
     });
 
-    console.error(`[OSSEC] INTERNAL_ERROR in ${context} (${errorId})`);
+    console.error(
+      `[OWL SESSION GUARD] INTERNAL_ERROR in ${context} (${errorId})`,
+    );
 
     return {
       success: false,

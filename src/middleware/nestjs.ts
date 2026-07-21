@@ -118,8 +118,8 @@ class NestSessionContext implements SessionWebContext {
   }
 }
 
-export const ROLES_KEY = "ossec:roles";
-export const SCOPES_KEY = "ossec:scopes";
+export const ROLES_KEY = "owlsessionguard:roles";
+export const SCOPES_KEY = "owlsessionguard:scopes";
 export const RequireRoles = (...roles: string[]) =>
   SetMetadata(ROLES_KEY, roles);
 export const RequireScopes = (...scopes: string[]) =>

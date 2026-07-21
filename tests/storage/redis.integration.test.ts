@@ -26,7 +26,11 @@ const describeRedis = RUN_REDIS_TESTS ? describe : describe.skip;
 
 describeRedis("Redis Integration Tests (Real Redis)", () => {
   let redis: Redis;
-  let container: { stop: () => Promise<void>; getHost: () => string; getMappedPort: (port: number) => number } | null = null;
+  let container: {
+    stop: () => Promise<void>;
+    getHost: () => string;
+    getMappedPort: (port: number) => number;
+  } | null = null;
 
   beforeAll(async () => {
     let redisUrl = REDIS_URL;
@@ -36,7 +40,13 @@ describeRedis("Redis Integration Tests (Real Redis)", () => {
       const { GenericContainer } = require("testcontainers");
       container = await new GenericContainer("redis:7.2.3")
         .withExposedPorts(6379)
-        .withCommand(["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"])
+        .withCommand([
+          "redis-server",
+          "--maxmemory",
+          "64mb",
+          "--maxmemory-policy",
+          "allkeys-lru",
+        ])
         .start();
 
       const host = container.getHost();
@@ -166,7 +176,7 @@ describeRedis("Redis Integration Tests (Real Redis)", () => {
       });
 
       // Check TTL exists on session key (should be <= 5 seconds)
-      const keys = await redis.keys("ossec:sess:*");
+      const keys = await redis.keys("owlsessionguard:sess:*");
       expect(keys.length).toBe(1);
 
       const ttl = await redis.ttl(keys[0]);
@@ -310,14 +320,18 @@ describeRedis("Redis Integration Tests (Real Redis)", () => {
       });
 
       // Verify role indices exist
-      const roleKeys = await redis.keys("ossec:idx:role:*");
+      const roleKeys = await redis.keys("owlsessionguard:idx:role:*");
       expect(roleKeys.length).toBeGreaterThanOrEqual(2);
 
       // Revoke all
-      await adapter.revokeAllForUser(userId, "MANUAL_LOGOUT" as any, new Date());
+      await adapter.revokeAllForUser(
+        userId,
+        "MANUAL_LOGOUT" as any,
+        new Date(),
+      );
 
       // Verify role indices are cleaned up
-      const remaining = await redis.keys("ossec:idx:role:*:ADMIN");
+      const remaining = await redis.keys("owlsessionguard:idx:role:*:ADMIN");
       expect(remaining.length).toBe(0);
     });
   });
@@ -339,9 +353,7 @@ describeRedis("Redis Integration Tests (Real Redis)", () => {
       const adapter = new RedisStoreAdapter(badRedis);
 
       // Operations should fail gracefully (throw, not crash)
-      await expect(
-        adapter.findById("nonexistent")
-      ).rejects.toThrow();
+      await expect(adapter.findById("nonexistent")).rejects.toThrow();
 
       // Clean up - don't call quit if connection never established
       badRedis.disconnect();

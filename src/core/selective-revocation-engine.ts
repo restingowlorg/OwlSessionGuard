@@ -363,7 +363,10 @@ export class SelectiveRevocationEngine {
     try {
       this.emitEvent("batch.revoked", { target, timestamp, ...payload });
     } catch (emitError) {
-      console.error("[OSSEC] batch.revoked emit failed:", emitError);
+      console.error(
+        "[OWL SESSION GUARD] batch.revoked emit failed:",
+        emitError,
+      );
     }
   }
 
@@ -382,7 +385,10 @@ export class SelectiveRevocationEngine {
           timestamp,
         });
       } catch (emitError) {
-        console.error("[OSSEC] session.revoked emit failed:", emitError);
+        console.error(
+          "[OWL SESSION GUARD] session.revoked emit failed:",
+          emitError,
+        );
       }
     }
   }
@@ -413,7 +419,9 @@ export class SelectiveRevocationEngine {
       timestamp: new Date(),
     });
 
-    console.error(`[OSSEC] INTERNAL_ERROR in ${context} (${errorId})`);
+    console.error(
+      `[OWL SESSION GUARD] INTERNAL_ERROR in ${context} (${errorId})`,
+    );
 
     return {
       success: false,

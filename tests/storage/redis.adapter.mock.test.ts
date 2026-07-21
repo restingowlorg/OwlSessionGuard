@@ -18,11 +18,11 @@ runAdapterContractTests(
     const adapter = new RedisStoreAdapter(redis);
 
     /**
-     * Polyfill: ossecCreateSession
+     * Polyfill: owlSessionGuardCreateSession
      * Atomic creation with native time sync and dual limit enforcement.
      */
     // @ts-expect-error - Custom Lua polyfill
-    redis.ossecCreateSession = async (
+    redis.owlSessionGuardCreateSession = async (
       userKey: string,
       sessKey: string,
       tokenKey: string,
@@ -87,11 +87,11 @@ runAdapterContractTests(
     };
 
     /**
-     * Polyfill: ossecUpdateSession
+     * Polyfill: owlSessionGuardUpdateSession
      * Atomic update with native time sync, dual limit enforcement, and rotation guard.
      */
     // @ts-expect-error - Custom Lua polyfill
-    redis.ossecUpdateSession = async (
+    redis.owlSessionGuardUpdateSession = async (
       sessKey: string,
       userKey: string,
       rolePrefix: string,
@@ -136,7 +136,11 @@ runAdapterContractTests(
             if (roleLimit && roleLimit > 0) {
               const roleKey = rolePrefix + role;
               await redis.zremrangebyscore(roleKey, "-inf", String(now));
-              const roleCount = await redis.zcount(roleKey, String(now), "+inf");
+              const roleCount = await redis.zcount(
+                roleKey,
+                String(now),
+                "+inf",
+              );
               if (roleCount >= roleLimit) {
                 throw new Error("ERR_SESSION_LIMIT_REACHED");
               }
@@ -156,7 +160,11 @@ runAdapterContractTests(
         if (oldTokenHash !== newTokenHash) {
           await redis.zrem(userKey, `${updatedRecord.id}:${oldTokenHash}`);
         }
-        await redis.zadd(userKey, String(score), `${updatedRecord.id}:${newTokenHash}`);
+        await redis.zadd(
+          userKey,
+          String(score),
+          `${updatedRecord.id}:${newTokenHash}`,
+        );
         await redis.expire(userKey, maxAbsTtl);
 
         // Update role indices
@@ -165,7 +173,11 @@ runAdapterContractTests(
           if (oldTokenHash !== newTokenHash) {
             await redis.zrem(roleKey, `${updatedRecord.id}:${oldTokenHash}`);
           }
-          await redis.zadd(roleKey, String(score), `${updatedRecord.id}:${newTokenHash}`);
+          await redis.zadd(
+            roleKey,
+            String(score),
+            `${updatedRecord.id}:${newTokenHash}`,
+          );
           await redis.expire(roleKey, maxAbsTtl);
         }
       } else {
@@ -184,11 +196,11 @@ runAdapterContractTests(
     };
 
     /**
-     * Polyfill: ossecRotateSession
+     * Polyfill: owlSessionGuardRotateSession
      * Atomic session rotation (1-to-1 replacement) with per-role limit enforcement.
      */
     // @ts-expect-error - Custom Lua polyfill
-    redis.ossecRotateSession = async (
+    redis.owlSessionGuardRotateSession = async (
       oldSessKey: string,
       oldTokenKey: string,
       userKey: string,
@@ -280,11 +292,11 @@ runAdapterContractTests(
     };
 
     /**
-     * Polyfill: ossecDeleteSession
+     * Polyfill: owlSessionGuardDeleteSession
      * Atomic annihilation of record and indices including role cleanup.
      */
     // @ts-expect-error - Custom Lua polyfill
-    redis.ossecDeleteSession = async (
+    redis.owlSessionGuardDeleteSession = async (
       sessKey: string,
       userKey: string,
       rolePrefix: string,

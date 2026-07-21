@@ -3,3 +3,4 @@
 /.env
 /apps/*/.env
 tsconfig.tsbuildinfo
+/test-consumer

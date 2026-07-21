@@ -1,7 +1,7 @@
 {
-  "name": "@restingowlorg/owl-session-guard",
+  "name": "@restingowlorg/owlsessionguard",
   "version": "1.0.0",
-  "description": "A framework-agnostic, database-agnostic session management library for Node.js",
+  "description": "OwlSessionGuard: OWASP-aligned session management, rotation, revocation, and framework middleware for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -61,7 +61,10 @@
     "test:redis": "cross-env RUN_REDIS_TESTS=true jest tests/storage/redis.integration.test.ts",
     "test:all": "npm test && npm run test:redis",
     "check:package": "node scripts/check-package.js",
-    "release:validate": "npm run format:check && npm run lint -- --max-warnings=0 && npm run typecheck && npm run build && npm test && npm run test:redis && npm run check:package && node scripts/smoke-consumer.js"
+    "release:validate": "npm run format:check && npm run lint -- --max-warnings=0 && npm run typecheck && npm run build && npm test && npm run test:redis && npm run check:package && node scripts/smoke-consumer.js",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
+    "changeset": "changeset"
   },
   "lint-staged": {
     "src/**/*.ts": [
@@ -85,7 +88,13 @@
     "backend",
     "nodejs"
   ],
-  "author": "restingowl",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "Resting Owl",
+    "url": "https://github.com/restingowlorg"
+  },
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -117,6 +126,7 @@
     }
   },
   "devDependencies": {
+    "@changesets/cli": "^2.27.1",
     "@commitlint/cli": "^19.7.1",
     "@commitlint/config-conventional": "^19.7.1",
     "@eslint/js": "^9.21.0",
@@ -151,10 +161,14 @@
     }
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/restingowlorg/OwlSessionGuard.git"
-  }
+    "url": "git+https://github.com/restingowlorg/OwlSessionGuard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/restingowlorg/OwlSessionGuard/issues"
+  },
+  "homepage": "https://github.com/restingowlorg/OwlSessionGuard#readme"
 }

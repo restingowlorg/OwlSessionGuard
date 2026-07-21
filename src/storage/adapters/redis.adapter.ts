@@ -14,8 +14,8 @@ import { RedisStoreOptions } from "../../interfaces";
  * RedisStoreAdapter — The "State Machine" Implementation.
  *
  * ATOMIC STATE TRANSITIONS:
- * - ossecRotateSession: Atomic 1-to-1 session replacement.
- * - ossecValidateSession: Atomic check-and-update (prevents Zombie Validation).
+ * - owlSessionGuardRotateSession: Atomic 1-to-1 session replacement.
+ * - owlSessionGuardUpdateSession: Atomic check-and-update (prevents Zombie Validation).
  */
 export class RedisStoreAdapter implements SessionStoreAdapter {
   private redis: Redis;
@@ -26,7 +26,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
   constructor(redis: Redis, options: RedisStoreOptions = {}) {
     this.redis = redis;
-    this.prefix = options.keyPrefix || "ossec:";
+    this.prefix = options.keyPrefix || "owlsessionguard:";
     this.ttlBuffer = options.ttlBufferSeconds || 0;
     this.batchSize = options.batchSize || 500;
     this.maxAbsTimeout = options.maxAbsoluteTimeoutSeconds || 2592000;
@@ -35,7 +35,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
   }
 
   private registerLuaCommands() {
-    this.redis.defineCommand("ossecCreateSession", {
+    this.redis.defineCommand("owlSessionGuardCreateSession", {
       numberOfKeys: 4, // [userKey, sessKey, tokenKey, rolePrefix]
       lua: `
         local userKey = KEYS[1]
@@ -106,13 +106,13 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     });
 
     /**
-     * ossecRotateSession:
+     * owlSessionGuardRotateSession:
      * 1. Check if OLD session is active (read once, atomically, inside Lua).
      * 2. Set OLD to rotated.
      * 3. Create NEW session and indices.
      * ARGV[9] = oldTokenHash, ARGV[10] = oldId (passed from TS to avoid pre-fetch round-trip)
      */
-    this.redis.defineCommand("ossecRotateSession", {
+    this.redis.defineCommand("owlSessionGuardRotateSession", {
       numberOfKeys: 6, // [oldSessKey, oldTokenKey, userKey, newSessKey, newTokenKey, rolePrefix]
       lua: `
             -- 1. Retrieve the existing session record
@@ -214,7 +214,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
         `,
     });
 
-    this.redis.defineCommand("ossecUpdateSession", {
+    this.redis.defineCommand("owlSessionGuardUpdateSession", {
       numberOfKeys: 3, // [sessKey, userKey, rolePrefix]
       lua: `
         -- 1. Retrieve the existing session record
@@ -322,7 +322,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
       `,
     });
 
-    this.redis.defineCommand("ossecDeleteSession", {
+    this.redis.defineCommand("owlSessionGuardDeleteSession", {
       numberOfKeys: 3, // [sessKey, userKey, rolePrefix]
       lua: `
         local data = redis.call('GET', KEYS[1])
@@ -361,7 +361,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
     try {
       // @ts-expect-error - custom command
-      await this.redis.ossecCreateSession(
+      await this.redis.owlSessionGuardCreateSession(
         this.key("idx:user", record.userId),
         this.key("sess", record.id),
         this.key("idx:token", record.tokenHash),
@@ -409,7 +409,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
     try {
       // @ts-expect-error - custom command
-      await this.redis.ossecRotateSession(
+      await this.redis.owlSessionGuardRotateSession(
         this.key("sess", oldId),
         this.key("idx:token", oldRecord.tokenHash),
         this.key("idx:user", oldRecord.userId),
@@ -469,7 +469,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
 
     try {
       // @ts-expect-error - custom command
-      await this.redis.ossecUpdateSession(
+      await this.redis.owlSessionGuardUpdateSession(
         this.key("sess", id),
         this.key("idx:user", record.userId),
         this.key("idx:role", record.userId) + ":",
@@ -498,7 +498,7 @@ export class RedisStoreAdapter implements SessionStoreAdapter {
     if (!record) return;
 
     // @ts-expect-error - custom command
-    await this.redis.ossecDeleteSession(
+    await this.redis.owlSessionGuardDeleteSession(
       this.key("sess", id),
       this.key("idx:user", record.userId),
       this.key("idx:role", record.userId) + ":",
