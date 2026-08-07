@@ -116,7 +116,7 @@ Day-to-day development:
 
 ```bash
 npm run lint
-npm run lint:fix
+npm run lint -- --fix
 npm run typecheck
 npm run build
 npm run format
@@ -150,7 +150,7 @@ Expected hooks path: `.husky`
 
 ```bash
 npm run lint
-npm run lint:fix
+npm run lint -- --fix
 npm run typecheck
 ```
 
