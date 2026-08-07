@@ -11,6 +11,7 @@ on:
         options:
           - prerelease
           - stable
+
   push:
     branches:
       - main
@@ -31,53 +32,121 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # -----------------------------------------------------------------------
+      # Source
+      # -----------------------------------------------------------------------
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # -----------------------------------------------------------------------
+      # Runtime
+      # -----------------------------------------------------------------------
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 24.x
-          cache: npm
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Verify release runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
+
+          node <<'NODE'
+          const [nodeMajor, nodeMinor] = process.versions.node
+            .split(".")
+            .map(Number);
+
+          if (
+            nodeMajor < 22 ||
+            (nodeMajor === 22 && nodeMinor < 14)
+          ) {
+            console.error(
+              "npm Trusted Publishing requires Node.js 22.14.0 or later."
+            );
+            process.exit(1);
+          }
+          NODE
+
+          npm --version | node -e '
+            let input = "";
+
+            process.stdin.on("data", chunk => {
+              input += chunk;
+            });
+
+            process.stdin.on("end", () => {
+              const [major, minor, patch] = input.trim().split(".").map(Number);
+
+              const supported =
+                major > 11 ||
+                (major === 11 && minor > 5) ||
+                (major === 11 && minor === 5 && patch >= 1);
+
+              if (!supported) {
+                console.error(
+                  "npm Trusted Publishing requires npm 11.5.1 or later."
+                );
+                process.exit(1);
+              }
+            });
+          '
+
+      # -----------------------------------------------------------------------
+      # Release mode
+      # -----------------------------------------------------------------------
 
       - name: Determine release mode
         id: mode
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.release_mode }}" = "prerelease" ]; then
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] &&
+             [[ "${{ inputs.release_mode }}" == "prerelease" ]]; then
             echo "mode=prerelease" >> "$GITHUB_OUTPUT"
           else
             echo "mode=stable" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Show release context
+        shell: bash
         run: |
-          echo "Event: ${{ github.event_name }}"
+          set -euo pipefail
+
+          echo "Event:  ${{ github.event_name }}"
           echo "Branch: ${GITHUB_REF_NAME}"
-          echo "Mode: ${{ steps.mode.outputs.mode }}"
+          echo "Mode:   ${{ steps.mode.outputs.mode }}"
 
       - name: Enforce release branch policy
+        shell: bash
         run: |
-          if [ "${{ steps.mode.outputs.mode }}" = "stable" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
-            echo "Stable releases are only allowed from main." >&2
+          set -euo pipefail
+
+          MODE="${{ steps.mode.outputs.mode }}"
+          BRANCH="${GITHUB_REF_NAME}"
+
+          if [[ "$MODE" == "stable" && "$BRANCH" != "main" ]]; then
+            echo "::error::Stable releases are only allowed from main."
             exit 1
           fi
 
-          if [ "${{ steps.mode.outputs.mode }}" = "prerelease" ] && [ "${GITHUB_REF_NAME}" != "staging" ]; then
-            echo "Prereleases are only allowed from staging." >&2
+          if [[ "$MODE" == "prerelease" && "$BRANCH" != "staging" ]]; then
+            echo "::error::Prereleases are only allowed from staging."
             exit 1
           fi
 
-      - name: Force OIDC trusted publishing
-        run: |
-          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
-          echo "NPM_TOKEN=" >> "$GITHUB_ENV"
-
-      - name: Verify trusted publishing runtime
-        run: |
-          echo "Node: $(node --version)"
-          echo "npm: $(npm --version)"
-          node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 14)) { console.error("npm trusted publishing requires Node 22.14.0 or later."); process.exit(1); }'
+      # -----------------------------------------------------------------------
+      # Dependencies / quality gates
+      # -----------------------------------------------------------------------
 
       - name: Install dependencies
         run: npm ci
@@ -85,46 +154,255 @@ jobs:
       - name: Validate release quality gates
         run: npm run release:validate
 
+      # -----------------------------------------------------------------------
+      # Package artifact verification
+      # -----------------------------------------------------------------------
+
       - name: Create npm package artifact
         run: npm pack --json > pack-output.json
 
       - name: Smoke test npm package artifact
+        shell: bash
         run: |
-          PACK_FILE=$(node -e 'const fs=require("fs");const out=JSON.parse(fs.readFileSync("pack-output.json","utf8"));process.stdout.write(out[0].filename)')
-          TMP_DIR=$(mktemp -d)
+          set -euo pipefail
+
+          PACK_FILE="$(
+            node -e '
+              const fs = require("fs");
+
+              const output = JSON.parse(
+                fs.readFileSync("pack-output.json", "utf8")
+              );
+
+              if (!output[0]?.filename) {
+                throw new Error("npm pack did not return a package filename.");
+              }
+
+              process.stdout.write(output[0].filename);
+            '
+          )"
+
+          echo "Testing package artifact: $PACK_FILE"
+
+          TMP_DIR="$(mktemp -d)"
+
+          cleanup() {
+            rm -rf "$TMP_DIR"
+          }
+
+          trap cleanup EXIT
+
           cd "$TMP_DIR"
+
           npm init -y >/dev/null 2>&1
-          npm install "$GITHUB_WORKSPACE/$PACK_FILE"
-          node -e 'require("@restingowlorg/owlsessionguard"); require("@restingowlorg/owlsessionguard/storage"); require("@restingowlorg/owlsessionguard/storage/memory"); require("@restingowlorg/owlsessionguard/storage/redis"); console.log("artifact smoke test passed")'
-      - name: Enter prerelease mode and version packages
+
+          npm install \
+            --ignore-scripts \
+            "$GITHUB_WORKSPACE/$PACK_FILE"
+
+          node <<'NODE'
+          require("@restingowlorg/owlsessionguard");
+          require("@restingowlorg/owlsessionguard/storage");
+          require("@restingowlorg/owlsessionguard/storage/memory");
+          require("@restingowlorg/owlsessionguard/storage/redis");
+
+          console.log("Package artifact smoke test passed.");
+          NODE
+
+      # =======================================================================
+      # PRERELEASE
+      # staging -> next
+      # =======================================================================
+
+      - name: Verify stable package exists before prerelease
         if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
         run: |
-          if [ ! -f ".changeset/pre.json" ]; then
-            npx changeset pre enter next
+          set -euo pipefail
+
+          PACKAGE_NAME="$(
+            node -p 'require("./package.json").name'
+          )"
+
+          echo "Checking npm package: $PACKAGE_NAME"
+
+          if ! npm view "$PACKAGE_NAME" version \
+            --registry=https://registry.npmjs.org \
+            >/dev/null 2>&1; then
+
+            echo "::error::Package $PACKAGE_NAME has not been published yet."
+            echo "::error::Publish the initial stable release from main first."
+            echo "::error::This prevents the first prerelease from becoming the npm latest tag."
+            exit 1
           fi
-          npm run version-packages
-      - name: Verify Authentication Mode
-        run: |
-          echo "Prioritizing OIDC with automatic fallback to NPM_TOKEN if provided."
-      - name: Publish prerelease to next tag
+
+      - name: Prepare prerelease version
         if: steps.mode.outputs.mode == 'prerelease'
-        uses: changesets/action@v1
-        with:
-          publish: node scripts/publish-fallback.js
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHANGESET_COUNT="$(
+            find .changeset \
+              -maxdepth 1 \
+              -type f \
+              -name '*.md' \
+              ! -name 'README.md' \
+              | wc -l \
+              | tr -d ' '
+          )"
+
+          if [[ ! -f ".changeset/pre.json" ]]; then
+            if [[ "$CHANGESET_COUNT" == "0" ]]; then
+              echo "::error::No changesets are available for a new prerelease."
+              exit 1
+            fi
+
+            echo "Entering Changesets prerelease mode using npm tag: next"
+
+            npx changeset pre enter next
+            npm run version-packages
+          else
+            echo "Repository is already in Changesets prerelease mode."
+
+            if [[ "$CHANGESET_COUNT" != "0" ]]; then
+              echo "Applying new changesets to the prerelease."
+
+              npm run version-packages
+            else
+              echo "No new changesets found."
+              echo "Publishing the currently versioned prerelease if unpublished."
+            fi
+          fi
+
+          echo
+          echo "Prerelease package version:"
+          node -p '"  " + require("./package.json").name + "@" + require("./package.json").version'
+
+      - name: Validate prerelease package state
+        if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(node -p 'require("./package.json").version')"
+
+          if [[ "$VERSION" != *"-next."* ]]; then
+            echo "::error::Expected a next prerelease version but found: $VERSION"
+            exit 1
+          fi
+
+          if [[ ! -f ".changeset/pre.json" ]]; then
+            echo "::error::.changeset/pre.json is missing."
+            exit 1
+          fi
+
+          TAG="$(
+            node -e '
+              const fs = require("fs");
+
+              const pre = JSON.parse(
+                fs.readFileSync(".changeset/pre.json", "utf8")
+              );
+
+              process.stdout.write(pre.tag || "");
+            '
+          )"
+
+          if [[ "$TAG" != "next" ]]; then
+            echo "::error::Expected Changesets prerelease tag 'next', found '$TAG'."
+            exit 1
+          fi
+
+      - name: Commit prerelease version state
+        if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No prerelease version changes need to be committed."
+            exit 0
+          fi
+
+          VERSION="$(node -p 'require("./package.json").version')"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          git commit \
+            -m "chore(release): prerelease ${VERSION}"
+
+          # Persist prerelease state before publishing.
+          #
+          # If npm publishing subsequently fails, rerunning this workflow can
+          # safely attempt to publish the already-versioned package instead of
+          # generating another version.
+          git push origin HEAD:staging
+
+      - name: Publish prerelease
+        if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
           FALLBACK_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          node scripts/publish-fallback.js
+
+      - name: Push prerelease tags
+        if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push origin --follow-tags
+
+      - name: Verify prerelease publication
+        if: steps.mode.outputs.mode == 'prerelease'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_NAME="$(node -p 'require("./package.json").name')"
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+
+          PUBLISHED_VERSION="$(
+            npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version \
+              --registry=https://registry.npmjs.org
+          )"
+
+          if [[ "$PUBLISHED_VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "::error::Published version verification failed."
+            exit 1
+          fi
+
+          echo "Verified npm publication:"
+          echo "${PACKAGE_NAME}@${PUBLISHED_VERSION}"
+
+      # =======================================================================
+      # STABLE RELEASE
+      # main -> latest
+      # =======================================================================
 
       - name: Exit prerelease mode for stable release
         if: steps.mode.outputs.mode == 'stable'
+        shell: bash
         run: |
-          if [ -f ".changeset/pre.json" ]; then
+          set -euo pipefail
+
+          if [[ -f ".changeset/pre.json" ]]; then
+            echo "Exiting Changesets prerelease mode."
             npx changeset pre exit
+          else
+            echo "Repository is not in prerelease mode."
           fi
-      - name: Create release pull request or publish
+
+      - name: Create release pull request or publish stable release
         if: steps.mode.outputs.mode == 'stable'
+        id: changesets
         uses: changesets/action@v1
         with:
           version: npm run version-packages
@@ -134,6 +412,15 @@ jobs:
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_AUTH_TOKEN: ""
-          NPM_TOKEN: ""
+
+          # Used ONLY if npm Trusted Publishing fails.
           FALLBACK_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Show stable release result
+        if: steps.mode.outputs.mode == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Published: ${{ steps.changesets.outputs.published }}"
+          echo "Has changesets: ${{ steps.changesets.outputs.hasChangesets }}"
