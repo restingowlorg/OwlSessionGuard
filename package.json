@@ -1,44 +1,175 @@
 {
-  "name": "@restingowlorg/mvp-auth",
-  "version": "1.0.1",
-  "description": "A framework-agnostic, database-agnostic authentication library for Node.js",
+  "name": "@restingowlorg/owlsessionguard",
+  "version": "1.0.0",
+  "description": "OwlSessionGuard: OWASP-aligned session management, rotation, revocation, and framework middleware for Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/root.d.ts",
+      "import": "./dist/root.js",
+      "require": "./dist/root.js",
+      "default": "./dist/root.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js",
+      "require": "./dist/storage.js",
+      "default": "./dist/storage.js"
+    },
+    "./storage/memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js",
+      "require": "./dist/memory.js",
+      "default": "./dist/memory.js"
+    },
+    "./storage/redis": {
+      "types": "./dist/redis.d.ts",
+      "import": "./dist/redis.js",
+      "require": "./dist/redis.js",
+      "default": "./dist/redis.js"
+    },
+    "./express": {
+      "types": "./dist/express.d.ts",
+      "import": "./dist/express.js",
+      "require": "./dist/express.js",
+      "default": "./dist/express.js"
+    },
+    "./fastify": {
+      "types": "./dist/fastify.d.ts",
+      "import": "./dist/fastify.js",
+      "require": "./dist/fastify.js",
+      "default": "./dist/fastify.js"
+    },
+    "./nestjs": {
+      "types": "./dist/nestjs.d.ts",
+      "import": "./dist/nestjs.js",
+      "require": "./dist/nestjs.js",
+      "default": "./dist/nestjs.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc --declaration"
+    "build": "tsc --declaration && npm run check:package",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "format:check": "prettier --check src/**/*.ts",
+    "test": "jest --testPathIgnorePatterns='redis.integration'",
+    "test:redis": "cross-env RUN_REDIS_TESTS=true jest tests/storage/redis.integration.test.ts",
+    "test:all": "npm test && npm run test:redis",
+    "check:package": "node scripts/check-package.js",
+    "release:validate": "npm run format:check && npm run lint -- --max-warnings=0 && npm run typecheck && npm run build && npm test && npm run test:redis && npm run check:package && node scripts/smoke-consumer.js",
+    "version-packages": "changeset version",
+    "release": "changeset publish",
+    "changeset": "changeset"
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ]
   },
   "keywords": [
-    "authentication", "auth", "auth-library", "node-auth", "framework-agnostic",
-    "backend-auth", "session-auth", "password-auth", "magic-link", "passwordless",
-    "login", "signup", "security", "user-auth", "nodejs", "typescript",
-    "clean-architecture", "hexagonal-architecture", "backend", "api-auth",
-    "express-auth", "nest-auth"
+    "session",
+    "session-management",
+    "session-middleware",
+    "node-session",
+    "typescript",
+    "express-session",
+    "fastify-session",
+    "nestjs-session",
+    "redis-session",
+    "token-rotation",
+    "security",
+    "framework-agnostic",
+    "backend",
+    "nodejs"
   ],
-  "author": "",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "Resting Owl",
+    "url": "https://github.com/restingowlorg"
+  },
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "@nestjs/common": "^11.1.9",
-    "@zxcvbn-ts/core": "^3.0.4",
-    "bcrypt": "^6.0.0",
-    "js-sha1": "^0.7.0",
-    "mongoose": "^9.0.1",
-    "node-fetch": "^3.3.2",
-    "pg": "^8.16.3"
+    "ioredis": "^5.4.1",
+    "uuid": "^11.0.0"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^10.0.0 || ^11.0.0",
+    "@nestjs/core": "^10.0.0 || ^11.0.0",
+    "express": "^4.0.0 || ^5.0.0",
+    "fastify": "^4.0.0 || ^5.0.0",
+    "rxjs": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "fastify": {
+      "optional": true
+    },
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
+    "rxjs": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@types/bcrypt": "^6.0.0",
+    "@changesets/cli": "^2.27.1",
+    "@commitlint/cli": "^19.7.1",
+    "@commitlint/config-conventional": "^19.7.1",
+    "@eslint/js": "^9.21.0",
+    "@nestjs/common": "^11.1.20",
+    "@nestjs/core": "^11.1.20",
+    "@secretlint/secretlint-rule-preset-recommend": "^12.0.0",
     "@types/express": "^5.0.6",
-    "@types/node-fetch": "^2.6.13",
-    "@types/pg": "^8.16.0"
+    "@types/ioredis": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.2",
+    "@typescript-eslint/parser": "^8.59.2",
+    "cross-env": "^10.1.0",
+    "eslint": "^10.3.0",
+    "express": "^5.2.1",
+    "fastify": "^5.8.5",
+    "husky": "^9.1.7",
+    "ioredis-mock": "^8.9.0",
+    "jest": "^29.7.0",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.3",
+    "rxjs": "^7.8.2",
+    "secretlint": "^12.0.0",
+    "testcontainers": "^11.14.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.25.0"
+  },
+  "overrides": {
+    "dockerode": {
+      "uuid": "^11.1.1"
+    }
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/OSSecPlatform/ossec-auth-library"
-  }
+    "url": "git+https://github.com/restingowlorg/OwlSessionGuard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/restingowlorg/OwlSessionGuard/issues"
+  },
+  "homepage": "https://github.com/restingowlorg/OwlSessionGuard#readme"
 }

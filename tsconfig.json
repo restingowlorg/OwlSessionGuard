@@ -3,14 +3,22 @@
     "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
-    "module": "commonjs",
+    "module": "Node16",
     "target": "ES2019",
     "strict": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "moduleResolution": "node",
+    "moduleResolution": "node16",
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["jest", "node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "**/__tests__/**",
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "**/fixtures/**",
+    "**/mocks/**"
+  ]
 }
