@@ -260,7 +260,8 @@ Peer dependencies: `@nestjs/common`, `@nestjs/core`, `rxjs`
 // session.module.ts
 import { Module } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
-import { SessionService, MemoryStoreAdapter } from "@restingowlorg/owlsessionguard";
+import { SessionService } from "@restingowlorg/owlsessionguard";
+import { MemoryStoreAdapter } from "@restingowlorg/owlsessionguard/storage/memory";
 import { SessionGuard, SessionInterceptor } from "@restingowlorg/owlsessionguard/nestjs";
 import { AdminController } from "./admin.controller";
 
@@ -445,6 +446,8 @@ export class ProfileController {
 | `store.postgres.url`               | `string`                                  | PostgreSQL connection URL. Required when `provider` is `"postgres"`.                                                                               |
 | `store.postgres.tableName`         | `string`                                  | PostgreSQL table name.                                                                                                                             |
 | `store.custom.adapter`             | `SessionStoreAdapter`                     | Custom store adapter instance. Required when `provider` is `"custom"`.                                                                             |
+
+> **Note:** `"mongo"` and `"postgres"` are accepted as config provider values for type safety and validation. Built-in adapters for these backends are not shipped in v1.0.0. Use `store.provider: "custom"` with a user-implemented `SessionStoreAdapter` for MongoDB or PostgreSQL.
 
 ### Observability
 
