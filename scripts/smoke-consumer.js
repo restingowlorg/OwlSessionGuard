@@ -69,10 +69,13 @@ try {
   // ── Step 3: npm init + install ────────────────────────────────────────
   run("npm init -y", { cwd: tmpDir });
   console.log("[smoke] Installing tarball + peer deps...");
-  run(`npm install ${tgzPath} express fastify @nestjs/common @nestjs/core rxjs typescript @types/node @types/express`, {
-    cwd: tmpDir,
-    timeout: 120000,
-  });
+  run(
+    `npm install ${tgzPath} express fastify @nestjs/common @nestjs/core rxjs typescript @types/node @types/express`,
+    {
+      cwd: tmpDir,
+      timeout: 300000, // 5 minutes to handle slow CI network and cold package downloads
+    }
+  );
 
   // ── Step 4: CommonJS require checks ──────────────────────────────────
   console.log("\n[smoke] Testing CommonJS imports...");
@@ -142,7 +145,7 @@ try {
     const tscScript = path.join(tmpDir, "node_modules", "typescript", "lib", "tsc.js");
     execFileSync(process.execPath, [tscScript, "--noEmit"], {
       cwd: tmpDir,
-      timeout: 60000,
+      timeout: 120000, // 2 minutes for TypeScript type checking in CI
       encoding: "utf-8",
     });
     console.log("  OK   TypeScript declarations resolve");
